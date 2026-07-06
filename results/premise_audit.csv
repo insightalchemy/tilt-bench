@@ -1,0 +1,7 @@
+signature,count_flagged,pct_of_anomalies,count_insufficient_context
+new_or_rare_template,346039,99.31,0
+order_anomaly,343707,98.64,1
+timing_gap_anomaly,163685,46.97,1
+any_of_three,348450,100.0,0
+none_of_three,10,0.0,0
+timing_only (no template/order signal),3,0.0,0

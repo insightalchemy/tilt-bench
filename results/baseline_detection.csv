@@ -1,0 +1,4 @@
+detector,granularity,precision,recall,f1,tp,fp,fn,tn,n_true_anomalous,n_flagged,n_total,n_train_windows,n_train_normal_windows,n_test_windows,test_window_anomaly_rate,threshold,n_train_normal_rows,n_test_rows,test_row_anomaly_rate,n_nodes_fallback_low_count,n_nodes_fallback_zero_mad
+count_vector_pca,window,0.5138205668774889,0.6924291050665544,0.589901615831111,13161,12453,5846,85854,19007,25614,117314,206629.0,157290.0,117314.0,16.2,1.4686,,,,,
+isolation_forest_counts,window,0.11290322580645161,0.0003682853685484295,0.0007341758875662069,7,55,19000,98252,19007,62,117314,206629.0,157290.0,117314.0,16.2,0.5339,,,,,
+timing_inter_arrival_isolation_forest,row,0.021537834449768124,0.13020585124312764,0.03696169703088885,11202,508906,74831,829450,86033,520108,1424389,,,,,0.558,3061147.0,1424389.0,6.04,31691.0,0.0

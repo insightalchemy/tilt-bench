@@ -1,0 +1,9 @@
+fault_type,detector,detector_label,recall,detection_rate,base_rate,lift,n_injections_detected,n_injections_total
+stall,count_vector_pca,PCA (content),0.4333333333333333,0.4666666666666667,0.3977595272836769,1.089435459390733,7,15
+stall,z_score_threshold,"z_score_threshold (timing, additive)",0.7666666666666667,0.9333333333333332,0.4934089284336492,1.553815957689472,14,15
+stall,log_ratio_threshold,"log_ratio_threshold (timing, symmetric)",0.1333333333333333,0.2,0.0591567962189249,2.2538971319525,3,15
+stall,isolation_forest_counts,isolation_forest_counts (dead baseline),0.0666666666666666,0.0666666666666666,0.0766098554033745,0.8702100573829058,1,15
+burst,count_vector_pca,PCA (content),0.2891566265060241,0.4,0.3977477460560462,0.7269849530845094,6,15
+burst,z_score_threshold,"z_score_threshold (timing, additive)",0.2289156626506024,0.4,0.4934217646639082,0.4639350734893649,6,15
+burst,log_ratio_threshold,"log_ratio_threshold (timing, symmetric)",0.4337349397590361,0.5333333333333333,0.059169805703493,7.330342471167365,8,15
+burst,isolation_forest_counts,isolation_forest_counts (dead baseline),0.2409638554216867,0.4666666666666667,0.0765891982081115,3.1461858990471354,7,15
