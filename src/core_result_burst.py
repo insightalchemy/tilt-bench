@@ -1,29 +1,8 @@
-"""
-Core detection experiment, burst: does the same content-detector blind spot / timing-detector
-advantage hold for a burst (compressed inter-arrival) anomaly, not just a stall?
-
-Reuses the exact same fitting/scoring machinery as src/core_result_stall_final.py (PCA and
-isolation_forest_counts fit on clean train-normal count vectors; z_score_threshold -- the working
-timing detector, |z|>3, no ML -- built from the same per-node baseline as the audit), just pointed
-at the burst-injected dataset and its own ground-truth spans.
-
-Key open question this answers: does PCA, which showed ~chance lift (1.09) on stalls, show ABOVE-
-chance lift on bursts instead -- because fixed-time (60s) windows pack MORE events into a window
-during a burst, changing that window's count vector, whereas a stall just empties a window out
-(also a count change, but towards zero, which a template-frequency-driven PCA may not weight the
-same way)? Or does the same stall-style blind spot hold? Reported honestly either way.
-
-Writes:
-  results/core_result_burst.csv
-
-Usage:
-    python src/core_result_burst.py
-"""
 
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root, so `src.xxx` imports resolve
+sys.path.insert(0, str(Path(__file__).resolve().parents[1])) 
 
 import numpy as np
 import pandas as pd
