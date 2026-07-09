@@ -27,13 +27,20 @@ def add_sequence_context(df):
     return df
 
 
-def compute_node_baselines(df, normal_seq_mask, min_samples=MIN_NODE_BASELINE):
+def compute_node_baselines(df, normal_seq_mask, min_samples=MIN_NODE_BASELINE, exclude_zero_from_pooled=False):
     """Per-node (median, MAD) of the gaps selected by normal_seq_mask, with pooled-global
     fallback for nodes with too few samples or a degenerate (zero) per-node MAD.
 
     normal_seq_mask should select rows whose gap_prev_s reflects a normal-to-normal transition
     (both the row and its predecessor unlabeled) -- callers restrict this to a training period
     to avoid leaking test-period timing into the baseline.
+
+    exclude_zero_from_pooled=True computes the pooled (global) fallback from NON-ZERO gaps only.
+    Off by default -- BGL's zero-gap rate is ~0%, so this never mattered there. On datasets with a
+    high zero-gap rate (Thunderbird: >50% of gaps are exactly 0, since its timestamps are
+    second-resolution only), the zero value can dominate the pooled median/MAD too, making even
+    the fallback degenerate (median=MAD=0) exactly when it's needed most -- for the low-data nodes
+    that couldn't get a per-node baseline in the first place.
     """
     normal_gaps = df.loc[normal_seq_mask, ["node", "gap_prev_s"]]
 
@@ -47,8 +54,9 @@ def compute_node_baselines(df, normal_seq_mask, min_samples=MIN_NODE_BASELINE):
     fallback_low_count_nodes = set(node_counts[~enough_samples].index)
     fallback_zero_mad_nodes = set(node_counts[enough_samples & ~nonzero_mad].index)
 
-    global_median = normal_gaps["gap_prev_s"].median()
-    global_mad = (normal_gaps["gap_prev_s"] - global_median).abs().median()
+    pooled_gaps = normal_gaps.loc[normal_gaps["gap_prev_s"] > 0, "gap_prev_s"] if exclude_zero_from_pooled else normal_gaps["gap_prev_s"]
+    global_median = pooled_gaps.median()
+    global_mad = (pooled_gaps - global_median).abs().median()
 
     return {
         "node_median": node_median,

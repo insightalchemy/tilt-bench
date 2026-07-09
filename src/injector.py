@@ -90,12 +90,29 @@ def load_clean():
     return df
 
 
-def eligible_nodes(df, min_events=MIN_NODE_EVENTS):
+def eligible_nodes(df, min_events=MIN_NODE_EVENTS, node_baselines=None, require_valid_baseline=False):
+    """require_valid_baseline=True additionally restricts to nodes with a non-degenerate per-node
+    timing baseline (node_baselines["valid_nodes"]) -- needed on datasets where the pooled fallback
+    itself is degenerate (see src.timing_baseline.compute_node_baselines's exclude_zero_from_pooled),
+    so a low-data node never gets an injection intensity scaled against a broken (zero) baseline.
+    Off by default -- BGL's pooled fallback is healthy, so this was never needed there."""
     counts = df.groupby("node").size()
-    return counts[counts >= min_events].index.tolist()
+    nodes = counts[counts >= min_events].index.tolist()
+    if require_valid_baseline:
+        if node_baselines is None:
+            raise ValueError("require_valid_baseline=True requires node_baselines")
+        nodes = [n for n in nodes if n in node_baselines["valid_nodes"]]
+    return nodes
 
 
-def plan_injections(df, node_baselines, seed=SEED, n_injections=N_INJECTIONS):
+def plan_injections(
+    df,
+    node_baselines,
+    seed=SEED,
+    n_injections=N_INJECTIONS,
+    min_node_events=MIN_NODE_EVENTS,
+    require_valid_baseline=False,
+):
     """Deterministic from `seed` alone. Node selection uses one draw from the master RNG (sampling
     without replacement needs shared state); each injection's start position and intensity are then
     drawn from that injection's OWN seeded RNG, so a single injection is independently regenerable
@@ -109,7 +126,8 @@ def plan_injections(df, node_baselines, seed=SEED, n_injections=N_INJECTIONS):
     """
     master_rng = np.random.default_rng(seed)
 
-    nodes = sorted(eligible_nodes(df))  # sorted for determinism (set/groupby order isn't guaranteed)
+    # sorted for determinism (set/groupby order isn't guaranteed)
+    nodes = sorted(eligible_nodes(df, min_events=min_node_events, node_baselines=node_baselines, require_valid_baseline=require_valid_baseline))
     chosen_nodes = master_rng.choice(nodes, size=n_injections, replace=False)
     injection_seeds = master_rng.integers(0, 2**31 - 1, size=n_injections)
 
@@ -171,13 +189,15 @@ def apply_injections(df, plans, node_baselines):
         t_next_orig = df.at[next_global, "timestamp"]
         original_gap_s = (t_next_orig - t_start).total_seconds()
 
-        # Build the delta directly in microseconds (the parquet's native timestamp resolution) --
-        # a Timedelta built from fractional seconds defaults to nanosecond precision, which pandas
-        # 3.x refuses to downcast losslessly into a datetime64[us] column.
+        # Build the delta directly in microseconds -- a Timedelta built from fractional seconds
+        # defaults to nanosecond precision, which pandas 3.x refuses to downcast losslessly into
+        # a coarser column dtype. Casting explicitly to the column's OWN dtype (datetime64[us] for
+        # BGL, datetime64[ms] for Thunderbird -- whatever the parquet round-trip produced) makes
+        # this portable across datasets instead of assuming BGL's specific resolution.
         delta = pd.Timedelta(microseconds=round(delta_seconds * 1_000_000))
         delta_seconds = delta.total_seconds()  # the exact applied value, for the ground-truth record
         shift_positions = node_positions[start_pos + 1 :]
-        df.loc[shift_positions, "timestamp"] = (df.loc[shift_positions, "timestamp"] + delta).astype("datetime64[us]")
+        df.loc[shift_positions, "timestamp"] = (df.loc[shift_positions, "timestamp"] + delta).astype(df["timestamp"].dtype)
 
         t_next_new = df.at[next_global, "timestamp"]
         df.at[next_global, "injected_row"] = True
@@ -223,14 +243,21 @@ def label_spans_on_grid(labels_df, df_injected, scheme=EVAL_WINDOW_SCHEME, size=
     return pd.DataFrame(rows)
 
 
-def plan_burst_injections(df, node_baselines, seed=BURST_SEED, n_injections=BURST_N_INJECTIONS):
+def plan_burst_injections(
+    df,
+    node_baselines,
+    seed=BURST_SEED,
+    n_injections=BURST_N_INJECTIONS,
+    min_node_events=BURST_MIN_NODE_EVENTS,
+    require_valid_baseline=False,
+):
     """Mirrors plan_injections, plus a burst_length draw. A candidate start position is rejected
     if ANY of its burst_length candidate gaps is already an outlier relative to the node's
     baseline (too large OR too small), so a burst compresses an otherwise-ordinary run of gaps
     rather than one that already contained something unusual."""
     master_rng = np.random.default_rng(seed)
 
-    nodes = sorted(eligible_nodes(df, min_events=BURST_MIN_NODE_EVENTS))
+    nodes = sorted(eligible_nodes(df, min_events=min_node_events, node_baselines=node_baselines, require_valid_baseline=require_valid_baseline))
     chosen_nodes = master_rng.choice(nodes, size=n_injections, replace=False)
     injection_seeds = master_rng.integers(0, 2**31 - 1, size=n_injections)
 
@@ -310,13 +337,15 @@ def apply_burst_injections(df, plans):
             t_prev_orig, t_prev_new = t_orig, t_new
 
         t_end = new_ts[-1]
-        df.loc[burst_positions, "timestamp"] = pd.Series(new_ts, index=burst_positions).astype("datetime64[us]")
+        # Cast to the column's OWN dtype (datetime64[us] for BGL, datetime64[ms] for Thunderbird)
+        # rather than a hardcoded unit, so this is portable across datasets.
+        df.loc[burst_positions, "timestamp"] = pd.Series(new_ts, index=burst_positions).astype(df["timestamp"].dtype)
         df.loc[burst_positions, "injected_row"] = True
 
         trailing_positions = node_positions[start_pos + 1 + L :]
         if len(trailing_positions) > 0:
             shift = pd.Timedelta(microseconds=total_saved_us)
-            df.loc[trailing_positions, "timestamp"] = (df.loc[trailing_positions, "timestamp"] - shift).astype("datetime64[us]")
+            df.loc[trailing_positions, "timestamp"] = (df.loc[trailing_positions, "timestamp"] - shift).astype(df["timestamp"].dtype)
 
         labels.append(
             {

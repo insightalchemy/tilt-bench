@@ -1,0 +1,5 @@
+signature,count_flagged,pct_of_anomalies,count_insufficient_context,count_excluded_unknown_template
+new_or_rare_template,170411,99.99,0,0
+pure_order_anomaly,66412,38.97,0,13639
+timing_gap_anomaly,84932,49.84,0,0
+timing_only,0,0.0,0,0
