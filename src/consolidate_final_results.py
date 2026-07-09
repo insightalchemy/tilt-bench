@@ -1,18 +1,3 @@
-"""
-Consolidation only -- no new computation. Reads the already-computed, already-verified result
-files from the stall/burst detection experiments and combines them into one master table.
-
-Sources (all pre-existing, unmodified):
-  results/core_result_stall_final.csv   -- PCA, z_score_threshold, isolation_forest_counts (stall)
-  results/core_result_burst_v2.csv      -- PCA, isolation_forest_counts, z_score_threshold,
-                                            log_ratio_threshold (burst)
-  results/timing_feature_comparison.csv -- log_ratio_threshold (stall) + z_score_threshold (both,
-                                            cross-checked against the two files above)
-
-Writes:
-  results/FINAL_results.csv -- the paper's main results table: one row per (fault_type, detector)
-"""
-
 from pathlib import Path
 
 import pandas as pd
@@ -38,9 +23,7 @@ def main():
 
     burst = pd.read_csv(BURST_CSV)
     burst["fault_type"] = "burst"
-
-    # log_ratio_threshold never appeared in core_result_stall_final.csv (it was added in a later
-    # pass) -- pull its stall row from timing_feature_comparison.csv instead.
+  
     comparison = pd.read_csv(COMPARISON_CSV)
     stall_log_ratio = comparison[(comparison["fault_type"] == "stall") & (comparison["detector"] == "log_ratio_threshold")].copy()
     stall_log_ratio["n_injections_total"] = 15
@@ -50,9 +33,6 @@ def main():
         ignore_index=True,
     )
 
-    # Cross-check: z_score_threshold and PCA/isolation_forest_counts rows should agree byte-for-byte
-    # across whichever source files they appear in more than once (a consolidation sanity check,
-    # not new computation).
     dupes = combined[combined.duplicated(subset=["fault_type", "detector"], keep=False)]
     if not dupes.empty:
         for (ft, det), group in dupes.groupby(["fault_type", "detector"]):
