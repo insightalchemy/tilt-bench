@@ -11,7 +11,7 @@ drowning the one properly-scaled feature. v2 adds a z_score-ALONE trivial thresh
 
 Detectors are fit on the CLEAN (pre-injection) train-period normal data -- the exact same fitting
 methodology validated for results/baseline_final.csv -- then applied across the FULL injected
-dataset (not restricted to a test split by timestamp, since most of the 15 synthetic stalls land
+dataset (not restricted to a test split by timestamp, since most of the synthetic stalls land
 chronologically in what would have been the "train" period) to see whether each detector flags
 them. Ground truth is the injected-span grid-cell labels (src/injector.py's
 injection_grid_labels_stall.csv), NOT BGL's native content labels.
@@ -21,7 +21,7 @@ per results/iforest_diagnosis.md -- kept in the table for completeness only, per
 
 Writes:
   results/core_result_stall_v2.csv                  -- per-detector P/R/F1/lift/detection-rate + complementarity
-  results/core_result_stall_v2_timing_feature_diag.csv -- the 15 injected rows' own features + scores
+  results/core_result_stall_v2_timing_feature_diag.csv -- the injected rows' own features + scores
 
 Usage:
     python src/core_result_stall.py
@@ -147,7 +147,7 @@ def main():
         "timing_zscore_threshold": zscore_predicted,
     }
 
-    print("\n=== Diagnostic: the 15 injected rows' own (now node-normalized) timing features + ML score ===")
+    print(f"\n=== Diagnostic: the {len(timing_row_diag)} injected rows' own (now node-normalized) timing features + ML score ===")
     pd.set_option("display.width", 200)
     print(timing_row_diag.to_string())
     print(

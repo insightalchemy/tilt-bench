@@ -26,7 +26,6 @@ def main():
   
     comparison = pd.read_csv(COMPARISON_CSV)
     stall_log_ratio = comparison[(comparison["fault_type"] == "stall") & (comparison["detector"] == "log_ratio_threshold")].copy()
-    stall_log_ratio["n_injections_total"] = 15
 
     combined = pd.concat(
         [stall[["fault_type", "detector"] + COLS], stall_log_ratio[["fault_type", "detector"] + COLS], burst[["fault_type", "detector"] + COLS]],

@@ -187,6 +187,7 @@ def main():
                     "grid_flagged_frac": row["grid_flagged_frac"],
                     "lift": row["lift"],
                     "n_injections_detected": row["n_injections_detected"],
+                    "n_injections_total": row["n_injections_total"],
                 }
             )
     comparison_df = pd.DataFrame(comparison_rows)

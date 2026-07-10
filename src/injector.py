@@ -63,7 +63,7 @@ OUT_CONFIG_JSON = Path("data/processed/injection_config_stall.json")
 OUT_GRID_LABELS_CSV = Path("data/processed/injection_grid_labels_stall.csv")
 
 SEED = 42
-N_INJECTIONS = 15
+N_INJECTIONS = 40
 INTENSITY_CHOICES = [10, 15, 20, 25, 30]  # multiples of the node's MAD-derived scale -- easily changeable
 MIN_NODE_EVENTS = 30  # node eligibility: enough events for real before/after context
 START_FRACTION_RANGE = (0.2, 0.8)  # place the stall well inside the node's own sequence
@@ -71,7 +71,7 @@ MAX_ORIGINAL_GAP_Z = 3.0  # reject injection points whose PRE-EXISTING gap alrea
 MAX_START_POS_TRIES = 200  # bounded retries before falling back to any position in range
 
 BURST_SEED = 43  # distinct from stall's SEED, for an independently reproducible burst experiment
-BURST_N_INJECTIONS = 15
+BURST_N_INJECTIONS = 40
 BURST_INTENSITY_CHOICES = [10, 15, 20, 25, 30]  # compression factor: new_gap = orig_gap / intensity
 BURST_LENGTH_CHOICES = [10, 15, 20, 25]  # number of consecutive gaps compressed per injection
 BURST_MIN_NODE_EVENTS = MIN_NODE_EVENTS + max(BURST_LENGTH_CHOICES)  # room for the whole burst + margin
