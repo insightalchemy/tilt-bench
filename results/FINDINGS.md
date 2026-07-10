@@ -1,172 +1,307 @@
 # TILT-Bench: Findings Summary
 
-Plain-language consolidation of the project to date. No new analysis — every number here is
-already computed and saved in `results/`; see `results/FINAL_results.csv` for the master table.
+Plain-language consolidation of the project to date, at **n=100 injections per fault type per
+dataset** (locked after this pass — see "Honest open items" for why n was scaled 15 → 40 → 100
+before settling). Every number here is already computed and saved in `results/`; see
+`results/FINAL_results.csv` (BGL) and `results/thunderbird_vs_bgl_comparison.csv` (both datasets)
+for the master tables.
 
 ## 1. The premise
 
 Standard log-anomaly-detection benchmarks are evaluated almost entirely against **content**-based
-anomalies (new/rare event templates, broken sequence order). We asked: does BGL's own native
-anomaly labeling already contain timing-only faults, or is timing a genuine blind spot in how
-these benchmarks are built?
+anomalies (new/rare event templates, broken sequence order). We asked: do these datasets' own
+native anomaly labels already contain timing-only faults, or is timing a genuine blind spot in how
+these benchmarks are built? Checked on two datasets with genuine per-line native labels (BGL,
+Thunderbird); HDFS's block-level labeling breaks the premise-audit signatures structurally and is
+handled separately in §6.
 
-The premise audit (`src/premise_audit.py`, `results/premise_audit_v2.csv`,
-`results/premise_audit_summary.md`) checked every one of BGL's 348,460 natively-labeled anomalous
-rows for three independent signatures: new/rare template, "pure" order anomaly (unusual sequence
-with otherwise-known content), and timing-gap anomaly. Result: **99.3%** show a new/rare template,
-only **0.52%** show a pure order anomaly once content novelty is properly controlled for (a v1 of
-this audit had conflated the two — order novelty and content novelty were almost the same 348k
-rows; the v2 fix isolated them), and **47.0%** show a timing-gap anomaly — but timing almost never
-appears without content novelty riding along (only 3 of 348,460 rows are timing-only). BGL's native
-labels are overwhelmingly content-defined. This motivated building a controlled timing-fault
-injector rather than relying on BGL's native anomaly mix to evaluate timing detection.
+| signature | BGL (348,460 anomalous rows) | Thunderbird (170,422 anomalous rows) |
+|---|---|---|
+| new_or_rare_template | 99.31% | 99.99% |
+| pure_order_anomaly | 0.52% | **38.97%** |
+| timing_gap_anomaly | 46.97% | 49.84% |
+| timing-only (no content/order riding along) | 0.00% (3/348,460) | 0.00% |
+
+Content-novelty is near-universal on both datasets, confirming the premise: native anomaly labels
+are overwhelmingly content-defined, and **zero** rows on either dataset are purely timing-anomalous.
+This motivated building a controlled timing-fault injector rather than relying on native anomaly
+mix to evaluate timing detection.
+
+One real cross-dataset difference surfaced along the way, not assumed away: Thunderbird's
+pure-order rate (38.97%) is **75× BGL's** (0.52%) — checked against a representative, diverse
+50M–60M-line slice (not a single-incident artifact; see `results/thunderbird_setup_notes_v2.md`).
+Thunderbird's native anomalies are more likely to reuse content a node already produces normally
+while landing in an unusual sequence position — a structurally different anomaly mechanism from
+BGL's, though it doesn't change the core timing-blind-spot conclusion (timing-only is still 0% on
+both).
 
 ## 2. The injector and its validation
 
-`src/injector.py` implements two fault types, both operating per-node (BGL is a continuous
-per-node stream) and both provably order-preserving (a stall shifts every downstream timestamp by
-a constant; a burst compresses a run of gaps then shifts everything downstream by the exact time
-saved — both are single-constant shifts to a whole tail of the sequence, which can never invert
-order).
+`src/injector.py` (BGL) / `src/injector_thunderbird.py` (Thunderbird, same functions reused
+unmodified) implement two fault types, both per-node/per-sequence and both provably
+order-preserving (a stall shifts every downstream timestamp by a constant; a burst compresses a run
+of gaps then shifts everything downstream by the exact time saved — both are single-constant shifts
+to a whole tail of the sequence, which can never invert order).
 
 - **Stall**: insert a large gap = `intensity × node_scale` (additive), where `node_scale` is the
-  same per-node MAD-derived scale (with pooled fallback for low-data nodes) used throughout the
-  audit and detectors.
+  per-node MAD-derived scale.
 - **Burst**: compress `L` consecutive gaps by `new_gap = orig_gap / intensity` (multiplicative),
   then shift everything downstream backward by the total time saved.
 
-Two validations were run before trusting any detection result:
-- **Ordering**: automated check across the *entire* injected dataset (not just injected nodes) —
-  **0 violations**, for both stall and burst, out of 4,747,963 rows.
-- **Instrument validation**: re-ran the premise-audit signatures on the injected rows themselves.
-  Stall: timing fired on **100%** of injections, content/order stayed silent (6.7% / 0%, both
-  explained as pre-existing coincidence, not injector leakage — see below). Burst: timing fired on
-  only **15.1%** of injected rows, content/order silent (0% / 0%) — this lower timing-fire rate on
-  bursts turned out to be the first sign of the feature-geometry issue described in §5, not a
-  problem with the injector itself.
+**Thunderbird-specific fix, applied before any Thunderbird injection**: Thunderbird's pooled
+fallback baseline is itself degenerate (median=MAD=0, since >50% of *all* gaps are exactly 0 —
+second-level timestamp resolution). Fixed via two additive, opt-in parameters (BGL's own invocation
+is provably unaffected — regression-diffed): `require_valid_baseline=True` restricts injection
+eligibility to nodes with a genuine non-degenerate per-node baseline (no node is ever scaled against
+a broken fallback), and `exclude_zero_from_pooled=True` makes the pooled fallback itself
+non-degenerate for the content/order detectors that still use it.
 
-One coincidence was investigated rather than assumed benign: 1 of 15 stall injections tripped the
-template-rarity signature. Checked directly — the injected row's own (untouched) content was a
-real, pre-existing "Lustre mount FAILED" incident already present in BGL's native labels at that
-exact node/time. Confirmed as coincidence, not a labeling leak, before proceeding.
+**Node-eligibility check at n=100** (the injection count approaches what's available on
+Thunderbird, so this was verified *before* injecting, not after):
+
+| dataset | fault | eligible nodes | injections drawn | distinct nodes used | used_pooled_fallback |
+|---|---|---|---|---|---|
+| BGL | stall | 37,765 | 100 | 100 | 0 (checked directly) |
+| BGL | burst | 30,889 | 100 | 100 | n/a (BGL doesn't require it; not a gate) |
+| Thunderbird | stall | 3,433 | 100 | 100 | 0 (structurally guaranteed — `require_valid_baseline=True`) |
+| Thunderbird | burst | 3,418 | 100 | 100 | 0 (structurally guaranteed) |
+
+All four combinations clear 100 eligible nodes by a wide margin (34×–378× the requested count) —
+no marginal/low-quality-baseline nodes were needed.
+
+**Two validations were run before trusting any detection result, at n=100, all four
+dataset×fault-type combinations:**
+
+- **Ordering**: automated check across the *entire* injected dataset (not just injected nodes) —
+  **0 violations** in every case: BGL 4,747,963 rows (×2 fault types), Thunderbird 10,000,000 rows
+  (×2 fault types).
+- **Instrument validation**: re-ran the premise-audit signatures on the injected rows themselves.
+  Expectation: timing fires, content/order stay silent.
+
+| dataset | fault | timing_gap_anomaly | new_or_rare_template | pure_order_anomaly |
+|---|---|---|---|---|
+| BGL | stall | **99.0%** | 3.0% | 0.0% |
+| BGL | burst | 20.4% | 0.2% | 0.0% |
+| Thunderbird | stall | **100.0%** | 0.0% | 0.0% |
+| Thunderbird | burst | 4.4% | 0.6% | 0.0% |
+
+Content/order stay essentially silent everywhere (≤3%), confirming clean injections on both
+datasets. The lower timing-fire rate on bursts (20.4% BGL, 4.4% Thunderbird — both far below
+stall's ~100%) is not an injector defect; it's the first visible sign of the feature-geometry issue
+in §5 (an additive z-score is structurally bounded against multiplicative compression).
 
 ## 3. The stall result
 
-Fit on clean (pre-injection) train-period data, detectors were run against the 15 injected stalls,
-scored on the injected-span ground truth (not BGL's native labels), on a common 60-second per-node
-grid so every detector is comparable.
+Fit on clean (pre-injection) train-period data, detectors run against the 100 injected stalls per
+dataset, scored on the injected-span ground truth (not native labels), on a common 60-second
+per-node grid.
 
-| detector | detection rate (of 15) | lift |
-|---|---|---|
-| z_score_threshold (timing) | **14/15 (93.3%)** | **1.55** |
-| count_vector_pca (content) | 7/15 (46.7%) | 1.09 (≈chance) |
-| isolation_forest_counts (dead baseline) | 1/15 (6.7%) | 0.87 (below chance) |
+| dataset | detector | detection rate (of 100) | lift |
+|---|---|---|---|
+| BGL | z_score_threshold (timing) | 91/100 (91%) | **1.33** |
+| BGL | count_vector_pca (content) | 30/100 (30%) | 0.72 (below chance) |
+| BGL | isolation_forest_counts (dead baseline) | 12/100 (12%) | 1.53 |
+| Thunderbird | z_score_threshold (timing) | 93/100 (93%) | **1.39** |
+| Thunderbird | count_vector_pca (content) | 6/100 (6%) | 1.98 |
+| Thunderbird | isolation_forest_counts (dead baseline) | 9/100 (9%) | 6.70 |
 
-**Lift** = recall ÷ the detector's own indiscriminate flagging rate — the metric that separates a
-real signal from "flags so much of everything that it hits small spans by chance." The timing
-detector shows real, above-chance detection; the content detector does not (lift ≈1 means its
-apparent recall is no better than its own base flagging rate would already predict). Combining
-content + timing (Jaccard 0.25) reaches 90% fusion recall — genuine complementarity.
-
-Note: an isolation-forest-wrapped version of the timing detector was also built and tuned (feature
-scaling was diagnosed and fixed after it showed lift <1 despite a strong raw signal), but even
-after the fix it substantially underperformed `z_score_threshold` (see §6). `z_score_threshold` —
-a trivial `|z|>3` rule, no ML — is the timing detector actually used in every reported result.
+**Lift** = recall ÷ the detector's own indiscriminate flagging rate. z_score shows real,
+above-chance detection on stalls on **both** datasets, holding up cleanly from n=15 through n=100
+(§5 has the full stability table). Thunderbird's PCA lift (1.98) is nominally above chance despite
+a very low absolute detection rate (6/100) — treat with caution; see §7.
 
 ## 4. The burst result
 
 Same setup, burst-injected data:
 
-| detector | detection rate (of 15) | lift |
-|---|---|---|
-| z_score_threshold (timing, additive) | 6/15 (40.0%) | **0.46 (below chance)** |
-| count_vector_pca (content) | 6/15 (40.0%) | 0.73 (≈chance) |
-| isolation_forest_counts (dead baseline) | 7/15 (46.7%) | 3.15 (checked, likely sampling noise — see §6) |
+| dataset | detector | detection rate (of 100) | lift |
+|---|---|---|---|
+| BGL | log_ratio_threshold (timing, symmetric) | 68/100 (68%) | **7.29** |
+| BGL | count_vector_pca (content) | 46/100 (46%) | 0.52 (below chance) |
+| BGL | z_score_threshold (timing, additive) | 63/100 (63%) | 0.50 (below chance) |
+| BGL | isolation_forest_counts (dead baseline) | 24/100 (24%) | 0.99 (≈chance) |
+| Thunderbird | log_ratio_threshold (timing, symmetric) | 59/100 (59%) | **2.75** |
+| Thunderbird | count_vector_pca (content) | 11/100 (11%) | 1.01 (≈chance) |
+| Thunderbird | z_score_threshold (timing, additive) | 34/100 (34%) | 0.35 (below chance) |
+| Thunderbird | isolation_forest_counts (dead baseline) | 43/100 (43%) | 11.96 |
 
-The z-score timing detector, which worked cleanly on stalls, **failed on bursts** — this was not
-assumed to be "bursts are just harder" and left at that; it was traced to a specific mechanism
-(§5).
+The additive z-score, which works cleanly on stalls on both datasets, **fails on bursts on both
+datasets** — not assumed to be "bursts are just harder," traced to a specific mechanism (§5). The
+symmetric `log_ratio_threshold` fixes this on both datasets, with real above-chance lift.
 
-## 5. The feature-geometry finding
+## 5. The feature-geometry / complementarity finding
 
 `z_score = (gap − node_median) / node_scale` is **additive**. A stall adds `intensity × node_scale`
-directly, so its z-score is unbounded by construction — bigger intensity, bigger z-score, always
-detectable given enough intensity. A burst instead **compresses** the gap
+directly, so its z-score is unbounded by construction. A burst instead **compresses** the gap
 (`new_gap = orig_gap / intensity`); its z-score is bounded by roughly `−(node_median / node_scale)`
-as intensity → ∞, regardless of how aggressive the compression is. Measured directly: BGL nodes
-have a strikingly consistent `median/MAD ≈ 0.675`, meaning no compression, however extreme, can
-push a typical gap's z-score much past ≈ −0.68 — structurally far below the `|z|>3` threshold. This
-explains both the burst instrument-validation rate (15.1%, §2) and the failed burst detection
-(§4) with the same single mechanism.
+as intensity → ∞, regardless of compression severity — structurally far below the `|z|>3` threshold
+for gap distributions with a positive median/MAD ratio, which both BGL and Thunderbird have. This
+single mechanism explains both datasets' low burst instrument-fire rate (§2) and failed burst
+z_score detection (§4).
 
 Fix tested: `log_ratio = log(gap / node_median)` is **symmetric** — a stall gives a large positive
-value, a burst gives a large negative value of comparable magnitude, since "N× larger" and "N×
-smaller" are equal-magnitude opposite-sign deviations in log space.
+value, a burst gives a large negative value of comparable magnitude.
 
-| fault | z_score_threshold lift | log_ratio_threshold lift |
-|---|---|---|
-| stall | 1.55 | 2.25 |
-| burst | **0.46** | **7.33** |
+**Lift by detector × fault × dataset, at n=100 (bold = above chance, i.e. lift > 1):**
 
-**The symmetric feature catches both fault types with real, above-chance lift; the additive
-z-score only worked in one direction.** Content detectors (PCA) stayed at/near chance on both
-fault types (1.09 stall, 0.73 burst) — the blind spot is structural to content detection, not an
-artifact of fault type. Feature geometry must match fault geometry: this is the headline
-methodological finding of the project so far.
+| dataset | fault | PCA (content) | z_score (timing, additive) | log_ratio (timing, symmetric) |
+|---|---|---|---|---|
+| BGL | stall | 0.72 | **1.33** | 0.95 |
+| BGL | burst | 0.52 | 0.50 | **7.29** |
+| Thunderbird | stall | **1.98** | **1.39** | **1.42** |
+| Thunderbird | burst | ≈1.01 | 0.35 | **2.75** |
 
-## 6. Honest open items
+**Does the pattern hold?**
+- **z_score is cleanly stall-only, on both datasets, with no exception**: above chance on both
+  stall cells (1.33, 1.39), below chance on both burst cells (0.50, 0.35).
+- **log_ratio is above chance on burst on both datasets** (7.29, 2.75) — the fix works as designed
+  everywhere it was meant to.
+- **log_ratio on stall is dataset-dependent, not a clean split.** Above chance on Thunderbird
+  (1.42) but **not decisively below chance on BGL** (0.95) — this specific cell has moved close
+  enough to the chance line (1.0) that it can no longer be reported as a confident negative result
+  (see the stability table below).
+- **PCA is not uniformly at/below chance on timing faults** — it fails as expected on 3 of 4 cells,
+  but Thunderbird-stall PCA (1.98) is a persistent, repeated exception across every n tested (0/15,
+  5.04/40, 1.98/100 — see below). Content detection is not structurally blind to timing faults on
+  every dataset; this should be stated as a qualified finding, not a universal one.
 
+**Stability across n=15 → n=40 → n=100** (the reason n was scaled before locking):
+
+| dataset | fault | detector | n=15 | n=40 | n=100 | stable? |
+|---|---|---|---|---|---|---|
+| BGL | stall | PCA | 1.09 | 0.60 | 0.72 | below chance from n=40 on |
+| BGL | stall | z_score | 1.55 | 1.27 | 1.33 | **stable, above chance throughout** |
+| BGL | stall | log_ratio | 2.25 | 0.68 | 0.95 | **not stable — see caveat below** |
+| BGL | burst | PCA | 0.73 | 0.49 | 0.52 | stable, below chance |
+| BGL | burst | z_score | 0.46 | 0.37 | 0.50 | **stable, below chance throughout** |
+| BGL | burst | log_ratio | 7.33 | 8.12 | 7.29 | **stable, above chance throughout** |
+| Thunderbird | stall | PCA | 0.00 (0/15) | 5.04 (5/40) | 1.98 (6/100) | **not stable — thin-sample artifact** |
+| Thunderbird | stall | z_score | 1.56 | 1.39 | 1.39 | **stable, above chance throughout** |
+| Thunderbird | stall | log_ratio | 1.59 | 1.55 | 1.42 | stable, above chance |
+| Thunderbird | burst | PCA | 0.87 | 0.71 | 1.01 | **borderline — hovering at chance across all three n** |
+| Thunderbird | burst | z_score | 0.26 | 0.49 | 0.35 | stable, below chance |
+| Thunderbird | burst | log_ratio | 1.84 | 1.64 | 2.75 | stable, above chance |
+
+**Two cells are explicitly flagged as not decisive, and should not be used to support a strong
+claim in either direction:**
+1. **BGL-stall log_ratio** (2.25 → 0.68 → 0.95): non-monotonic across all three sample sizes, and
+   at n=100 sits at lift=0.9488 with only 8/100 detections — indistinguishable from chance given
+   sampling noise at this base rate. The honest statement is "log_ratio does not show a reliable
+   signal on BGL stalls," not "log_ratio fails on BGL stalls."
+2. **Thunderbird-stall PCA** (0.00 → 5.04 → 1.98) and **Thunderbird-burst PCA** (0.87 → 0.71 →
+   1.01): both driven by single-digit-to-low-double-digit absolute detection counts (0/15, 5/40,
+   6/100 and 6/15, 18/40 [scaled], 11/100 respectively) and both hover on or near the chance line
+   across every n tested rather than settling. Treat Thunderbird-PCA numbers as noisy, not as
+   evidence either way.
+
+**What does hold cleanly, at every n tested, on both datasets, with no exceptions**: z_score
+detects stalls above chance and fails bursts below chance; log_ratio detects bursts above chance.
+That is the paper's core, load-bearing claim — feature geometry must match fault geometry — and it
+is not sensitive to the log_ratio/PCA instability above.
+
+## 6. HDFS: scope boundary (characterization only)
+
+HDFS was investigated for premise-audit characterization **only** — no injector, no detectors, by
+explicit design decision. This is not an oversight; it reflects a structural finding that HDFS
+doesn't fit this project's injection design as-is.
+
+| signature | BGL | Thunderbird | HDFS |
+|---|---|---|---|
+| new_or_rare_template | 99.31% | 99.99% | **4.53%** |
+| pure_order_anomaly | 0.52% | 38.97% | 0.00%* |
+| timing_gap_anomaly | 46.97% | 49.84% | 59.27%** |
+
+\* Not meaningfully evaluable: HDFS labels are uniform per block (an anomalous block has zero
+normal rows by construction, confirmed directly), so the signature's eligibility check — which
+requires the same node/block to have also produced the template *normally* — structurally excludes
+99.9% of anomalous rows. 0% here is an artifact of block-level labeling, not evidence of clean
+ordering.
+
+\** Not trustworthy as a real statistical signal, for the same root cause: 100% of anomalous blocks
+have zero normal-sequence rows, so all of them fall back to the pooled baseline, which is itself
+degenerate (median=MAD=0) and floored only by an arbitrary constant — at this floor, almost any
+nonzero gap trivially "fires."
+
+**The one clean, robust HDFS number**: new_or_rare_template at 4.53% — the near-total *inverse* of
+BGL/Thunderbird. HDFS's native anomaly labels come from block write-pipeline failures (missing
+acknowledgments, wrong replica counts, incomplete completion sequences), a fundamentally different
+anomaly *mechanism*: about the shape/completeness of a block's event sequence, not any individual
+line's content or timing.
+
+**Why no injector was built for HDFS**: the same per-node continuous-stream design used for
+BGL/Thunderbird doesn't transfer — HDFS is block-session structured, only 14.24% of blocks have a
+valid, non-degenerate per-block timing baseline even restricting to within-block injection, and the
+premise-audit signatures used to validate injection quality on the other two datasets hit the same
+structural walls described above when applied to HDFS's labeling scheme. HDFS's actual blind spot,
+if any, looks like a **third category — sequence-completeness / missing-event anomalies** —
+distinct from both the content detectors and the timing detectors this project built. Full detail
+in `results/hdfs_setup_notes.md`; this section is the scope boundary, not a plan to extend into
+HDFS injection under the current design.
+
+## 7. Honest open items
+
+- **BGL-stall log_ratio and both Thunderbird-PCA cells are not decisive** — see the stability table
+  in §5. Do not cite these three cells as either a positive or negative finding without the caveat.
 - **log-ratio vs z-score calibration is not apples-to-apples.** `z_score_threshold` uses a fixed
-  `|z|>3` rule that turns out to flag ~49% of everything (BGL's inter-arrival distribution is
-  heavy-tailed enough that a fixed 3-sigma-style cutoff isn't well-controlled). `log_ratio_threshold`
-  is calibrated from the train-normal 95th percentile, giving a genuinely disciplined ~5-6% base
-  rate. This is why log-ratio shows *higher lift* on stalls (2.25 vs 1.55) while *detecting fewer*
-  of them in absolute terms (3/15 vs 14/15) — it's stricter, not worse. A fair head-to-head would
-  calibrate both the same way; this hasn't been done.
-- **The isolation-forest-wrapped timing detector is still weak.** Feature scaling was diagnosed and
-  fixed (raw-seconds features were drowning the properly-normalized z-score), which measurably
-  improved its lift (0.83 → 1.67 on stalls), but it still catches far fewer stalls (2/15) than the
-  trivial `z_score_threshold` (14/15) it's supposed to generalize. Not pursued further per explicit
-  scope decision — `z_score_threshold` is the working timing detector going forward.
-- **isolation_forest_counts' burst lift (3.15) is likely noise, not signal.** It was checked (not
-  taken at face value): the hypothesized "windowing cramming" mechanism doesn't hold up
-  (burst-affected grid cells average 1.08 distinct native windows vs 1.03 for normal cells — not
-  enough to explain a 3x effect), and the true-positive sample is tiny (~83 grid cells total). This
-  detector has zero credibility as a working baseline (`results/iforest_diagnosis.md`: AUC=0.507,
-  chance-level ranking) — its burst number is reported for completeness, not as evidence.
-- **Only one dataset.** Everything here is BGL. No cross-dataset check yet (see Future Work).
+  `|z|>3` rule that flags ~49% of everything on both datasets (heavy-tailed inter-arrival
+  distributions). `log_ratio_threshold` is calibrated from the train-normal 95th percentile, giving
+  a disciplined ~6–13% base rate. This is part of why log-ratio's *lift* looks favorable even where
+  its absolute detection rate is lower — it's stricter, not necessarily more sensitive. A fair
+  head-to-head would calibrate both the same way; not yet done.
+- **The isolation-forest-wrapped timing detector was tried and abandoned.** Feature-scaling was
+  diagnosed and fixed, but it still substantially underperforms the trivial `z_score_threshold` on
+  stalls. Not pursued further — `z_score_threshold` and `log_ratio_threshold` are the timing
+  detectors actually used in every reported result.
+- **`isolation_forest_counts` (the "dead baseline") has zero credibility as a working detector**
+  (`results/iforest_diagnosis.md`: AUC=0.507, chance-level ranking) regardless of what its lift
+  number says in any given table — including BGL-burst's 0.99 (essentially exactly 1.0, consistent
+  with pure noise averaging out as n grows) and Thunderbird's noticeably higher numbers (6.70
+  stall, 11.96 burst), which have **not** been mechanistically checked the way BGL's was at n=15
+  (`results/iforest_diagnosis.md` predates the n-scaling and Thunderbird work) — treat both as
+  reported-for-completeness, not as evidence, until re-audited.
+- **n=100 is now locked** for both datasets and both fault types, per explicit decision after
+  observing that n=15 and even n=40 were too small to distinguish real signal from sampling noise
+  on several cells (§5). Any future re-scaling should re-run the full stability check, not assume
+  n=100 is automatically sufficient.
 
 ## Exact configuration
 
-- **Dataset**: BGL (Blue Gene/L), `data/raw/BGL.log`, 4,747,963 lines, 348,460 (7.34%) natively
-  labeled anomalous. Parsed with Drain3 → `data/processed/bgl_parsed.parquet`.
-- **Chronological split**: first 70% of rows by timestamp = train (fitting only), never random.
-- **Common evaluation grid**: fixed-time, **60 seconds**, per node (`src/metrics.py`:
-  `EVAL_WINDOW_SCHEME="fixed_time"`, `EVAL_WINDOW_SIZE=60`). Stability-checked at 30s/60s/120s
-  before being certified (`results/window_size_stability.csv`) — ordering and qualitative story
-  held at all three; 60s was adopted as the reference.
-- **Per-node timing baseline**: median + `1.4826×MAD` per node; nodes with <10 normal-to-normal
-  gaps fall back to a pooled/global baseline (~33% of nodes, confirmed in the premise audit and
-  reused identically in the injector and every timing detector).
-- **Stall injection**: `SEED=42`, 15 injections, one per distinct node, `intensity ∈
-  {10,15,20,25,30}` (multiples of node scale, additive), node eligibility ≥30 events, injection
-  point restricted to non-outlier pre-existing gaps (`|z|≤3`).
-- **Burst injection**: `SEED=43`, 15 injections, one per distinct node, `intensity ∈
+- **Datasets**:
+  - **BGL** (Blue Gene/L), `data/raw/BGL.log`, 4,747,963 lines, 348,460 (7.34%) natively labeled
+    anomalous. Parsed with Drain3 → `data/processed/bgl_parsed.parquet`.
+  - **Thunderbird**, representative 10,000,000-line slice (lines 50,000,001–60,000,000 of the
+    source archive, chosen for label/node diversity — see `results/thunderbird_setup_notes_v2.md`),
+    170,422 (1.70%) natively labeled anomalous, 4,722 nodes. Parsed with the same Drain3 pipeline →
+    `data/processed/thunderbird_parsed.parquet`.
+- **Chronological split**: first 70% of rows by timestamp = train (fitting only), never random, on
+  both datasets.
+- **Common evaluation grid**: fixed-time, **60 seconds**, per node (`src/metrics.py`). Stability-
+  checked at 30s/60s/120s on BGL before certification (`results/window_size_stability.csv`).
+- **Per-node timing baseline**: median + `1.4826×MAD` per node. BGL: nodes with <10 normal-to-normal
+  gaps fall back to a pooled/global baseline (healthy, ~33% of nodes). Thunderbird: pooled fallback
+  is degenerate (>50% of all gaps are exactly 0), so injection eligibility is instead restricted to
+  the 73.06% of nodes with a valid non-degenerate per-node baseline (`require_valid_baseline=True`,
+  `exclude_zero_from_pooled=True`).
+- **Stall injection**: `SEED=42`, **100 injections**, one per distinct eligible node, `intensity ∈
+  {10,15,20,25,30}` (multiples of node scale, additive), node eligibility ≥30 events (+ valid
+  baseline on Thunderbird), injection point restricted to non-outlier pre-existing gaps (`|z|≤3`).
+- **Burst injection**: `SEED=43`, **100 injections**, one per distinct eligible node, `intensity ∈
   {10,15,20,25,30}` (compression factor, multiplicative), `burst_length ∈ {10,15,20,25}` consecutive
-  gaps, node eligibility ≥55 events, same non-outlier eligibility filter applied to all gaps in the
-  burst window.
+  gaps, node eligibility ≥55 events (+ valid baseline on Thunderbird), same non-outlier eligibility
+  filter applied to all gaps in the burst window.
 - **Detector fitting**: PCA (`svd_solver="full"`, `random_state=0`) and IsolationForest
-  (`n_estimators=100`, `random_state=0`) both fit on clean train-period, BGL-label-normal data only;
-  count-vector vocabulary = top-300 templates from train. Decision thresholds: 95th percentile of
-  train-normal scores (ML detectors), fixed `Z_THRESH=3` (`z_score_threshold`), 95th-percentile of
+  (`n_estimators=100`, `random_state=0`) both fit on clean train-period, native-label-normal data
+  only; count-vector vocabulary = top-300 templates from train. Decision thresholds: 95th percentile
+  of train-normal scores (ML detectors), fixed `Z_THRESH=3` (`z_score_threshold`), 95th-percentile of
   train-normal `|log_ratio|` (`log_ratio_threshold`).
 
 ## Reproducibility
 
-Every result in `results/` and `figures/` regenerates from raw BGL via this sequence (run from the
+Every result in `results/` and `figures/` regenerates from raw data via this sequence (run from the
 repo root, with `.venv` activated):
 
 ```
+# BGL
 python src/parser.py
 python src/premise_audit.py
 python src/run_baseline_detectors.py
@@ -179,24 +314,37 @@ python src/validate_injection.py --type stall
 python src/validate_injection.py --type burst
 python src/core_result_stall.py
 python src/core_result_stall_final.py
+python src/core_result_burst.py
 python src/core_result_v2_symmetric.py
+
+# Thunderbird
+python src/parser_thunderbird.py
+python src/premise_audit_thunderbird.py
+python src/injector_thunderbird.py --type stall
+python src/injector_thunderbird.py --type burst
+python src/validate_injection_thunderbird.py --type stall
+python src/validate_injection_thunderbird.py --type burst
+python src/core_result_thunderbird.py
+
+# Consolidation (both datasets)
 python src/consolidate_final_results.py
+python src/compare_bgl_thunderbird.py
+
+# HDFS (characterization only — no injector/detectors, per §6)
+python src/parser_hdfs.py
+python src/premise_audit_hdfs.py
 ```
 
+All injection is fully seeded (`SEED=42` stall, `BURST_SEED=43` burst, same on both datasets) —
+identical output on rerun, verified directly this pass by rerunning three of the detector scripts
+fresh mid-session and confirming bit-identical lift values.
+
 **Manual/frozen exceptions** (intentional, not bugs):
-- `results/premise_audit.csv` (v1) is a **frozen historical snapshot** from before the
-  `pure_order_anomaly` fix. The current `src/premise_audit.py` only produces v2
-  (`premise_audit_v2.csv`); v1 is preserved on disk for the before/after comparison and is not
-  regenerated by any script.
-- `results/core_result_stall.csv` (v1) is similarly a **frozen snapshot** from before the
-  timing-detector feature-scaling fix. Running `src/core_result_stall.py` today produces v2
-  (`core_result_stall_v2.csv` + the feature diagnostic) — v1 is preserved for comparison, not
-  regenerated.
-- `results/core_result_burst.csv` is an **intermediate, superseded artifact** from the
-  `z_score_threshold`-only burst experiment. It's still reproducible by running
-  `src/core_result_burst.py` directly, but the final pipeline above regenerates the equivalent
-  (and more complete) numbers via `core_result_v2_symmetric.py`, so that separate script is not
-  part of the required sequence.
+- `results/premise_audit.csv` (v1) and `results/thunderbird_premise_audit.csv` (v1) are **frozen
+  historical snapshots** (pre-fix and pre-representative-slice respectively) — preserved for
+  before/after comparison, not regenerated by current scripts.
+- `results/core_result_stall.csv` (v1) is a **frozen snapshot** from before the timing-detector
+  feature-scaling fix — preserved for comparison, not regenerated.
 - Dependencies (`drain3`, `scikit-learn`, `matplotlib`, `pandas`, `pyarrow`) must be installed in
   `.venv` first; no other manual steps.
 
@@ -204,10 +352,10 @@ python src/consolidate_final_results.py
 
 - Additional fault types: slowdown (gradual stretch, distinct from stall's step-function gap) and
   jitter (added noise without a mean shift).
-- A second dataset (Thunderbird or HDFS) to check whether the content-blind-spot / feature-geometry
-  findings generalize beyond BGL's specific gap-distribution shape (the `median/MAD ≈ 0.675`
-  property that drove the z-score/log-ratio asymmetry is itself a BGL-specific measurement).
-- Realism calibration against LO2 / AnoMod or similar reference injectors, to characterize how
-  representative these synthetic intensities are of real-world timing faults.
 - A fair, matched-calibration head-to-head between `z_score_threshold` and `log_ratio_threshold`
-  (same base-rate target) to isolate the geometry effect from the calibration effect noted in §6.
+  (same base-rate target) to isolate the geometry effect from the calibration effect noted in §7.
+- Re-audit `isolation_forest_counts` on Thunderbird the way `results/iforest_diagnosis.md` did for
+  BGL, given its notably higher (and unexplained) lift numbers there.
+- Realism calibration against LO2 / AnoMod or similar reference injectors.
+- HDFS: either a sequence-completeness detector family, or a narrower within-block timing-injection
+  design restricted to the 14.24% valid-baseline subset — both open, per §6.

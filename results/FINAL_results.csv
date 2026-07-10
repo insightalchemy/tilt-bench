@@ -1,9 +1,9 @@
 fault_type,detector,detector_label,recall,detection_rate,base_rate,lift,n_injections_detected,n_injections_total
-stall,count_vector_pca,PCA (content),0.24,0.25,0.3977589879291515,0.6033804572198594,10,40
-stall,z_score_threshold,"z_score_threshold (timing, additive)",0.6266666666666667,0.925,0.4934142403716061,1.2700619791490086,37,40
-stall,log_ratio_threshold,"log_ratio_threshold (timing, symmetric)",0.04,0.05,0.0591552488577639,0.6761868265684787,2,40
-stall,isolation_forest_counts,isolation_forest_counts (dead baseline),0.1733333333333333,0.175,0.076609620012543,2.262553101098193,7,40
-burst,count_vector_pca,PCA (content),0.1929133858267716,0.45,0.3977505363832405,0.4850110010685083,18,40
-burst,z_score_threshold,"z_score_threshold (timing, additive)",0.1811023622047244,0.5,0.4934240985278994,0.3670318550411952,20,40
-burst,log_ratio_threshold,"log_ratio_threshold (timing, symmetric)",0.4803149606299212,0.725,0.0591913075186522,8.11461987857872,29,40
-burst,isolation_forest_counts,isolation_forest_counts (dead baseline),0.1023622047244094,0.25,0.0765891079035097,1.3365112550125242,10,40
+stall,count_vector_pca,PCA (content),0.2857142857142857,0.3,0.3977564193383966,0.7183147067482282,30,100
+stall,z_score_threshold,"z_score_threshold (timing, additive)",0.6581632653061225,0.91,0.4934259242505608,1.3338643815802194,91,100
+stall,log_ratio_threshold,"log_ratio_threshold (timing, symmetric)",0.0561224489795918,0.08,0.0591528552412861,0.9487699072287686,8,100
+stall,isolation_forest_counts,isolation_forest_counts (dead baseline),0.1173469387755102,0.12,0.0766087307713448,1.5317697812506168,12,100
+burst,count_vector_pca,PCA (content),0.2076923076923077,0.46,0.3977327866652507,0.5221905627486291,46,100
+burst,z_score_threshold,"z_score_threshold (timing, additive)",0.2448717948717948,0.63,0.4934405635047493,0.4962538813845165,63,100
+burst,log_ratio_threshold,"log_ratio_threshold (timing, symmetric)",0.432051282051282,0.68,0.0592433948921113,7.292817753575639,68,100
+burst,isolation_forest_counts,isolation_forest_counts (dead baseline),0.0756410256410256,0.24,0.0765493529345278,0.9881340957345632,24,100
