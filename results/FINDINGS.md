@@ -13,7 +13,7 @@ anomalies (new/rare event templates, broken sequence order). We asked: do these 
 native anomaly labels already contain timing-only faults, or is timing a genuine blind spot in how
 these benchmarks are built? Checked on two datasets with genuine per-line native labels (BGL,
 Thunderbird); HDFS's block-level labeling breaks the premise-audit signatures structurally and is
-handled separately in §6.
+handled separately in §7.
 
 | signature | BGL (348,460 anomalous rows) | Thunderbird (170,422 anomalous rows) |
 |---|---|---|
@@ -108,7 +108,7 @@ per-node grid.
 **Lift** = recall ÷ the detector's own indiscriminate flagging rate. z_score shows real,
 above-chance detection on stalls on **both** datasets, holding up cleanly from n=15 through n=100
 (§5 has the full stability table). Thunderbird's PCA lift (1.98) is nominally above chance despite
-a very low absolute detection rate (6/100) — treat with caution; see §7.
+a very low absolute detection rate (6/100) — treat with caution; see §8.
 
 ## 4. The burst result
 
@@ -199,7 +199,68 @@ detects stalls above chance and fails bursts below chance; log_ratio detects bur
 That is the paper's core, load-bearing claim — feature geometry must match fault geometry — and it
 is not sensitive to the log_ratio/PCA instability above.
 
-## 6. HDFS: scope boundary (characterization only)
+## 6. Threshold-independent evaluation (AUC-PR / AUC-ROC)
+
+Every result above is **lift**, which depends on each detector's own threshold — and those
+thresholds are not matched: `z_score_threshold` uses a fixed `|z|>3` rule that flags ~49% of
+everything, while `log_ratio_threshold` and both ML detectors are calibrated to their own
+train-normal 95th percentile (~5–13% base rate, see §8). A detector with a permissive threshold can
+post a lift>1 by flagging so much that it's bound to catch a fair share of the (rare) positives,
+without its underlying score actually ranking anomalous cells much higher than normal ones. AUC-PR
+and AUC-ROC (`src/auc_metrics.py`, `results/auc_metrics.csv`) score each detector's raw continuous
+score (PCA reconstruction error, `|z_score|`, `|log_ratio|`, isolation-forest anomaly score) with no
+threshold at all, aggregated onto the identical 60s grid via max-score-per-cell. Because positives
+are rare (~100 injections over ~2.8–2.9M grid cells per run), AUC-PR is reported alongside its
+no-skill baseline (positive-class prevalence) and their ratio, so the numbers are readable.
+
+| dataset | fault | detector | lift | AUC-PR ratio | AUC-ROC |
+|---|---|---|---|---|---|
+| BGL | stall | PCA | 0.72 | 0.85 | 0.407 |
+| BGL | stall | z_score | **1.33** | 1.04 | 0.537 |
+| BGL | stall | log_ratio | 0.95 | 0.91 | 0.465 |
+| BGL | stall | isoforest | 1.53 | 1.10 | 0.467 |
+| BGL | burst | PCA | 0.52 | 0.80 | 0.331 |
+| BGL | burst | z_score | 0.50 | 0.80 | 0.428 |
+| BGL | burst | log_ratio | **7.29** | **16.10** | **0.673** |
+| BGL | burst | isoforest | 0.99 | 0.86 | 0.408 |
+| Thunderbird | stall | PCA | 1.98 | 1.59 | **0.613** |
+| Thunderbird | stall | z_score | 1.39 | 1.44 | 0.587 |
+| Thunderbird | stall | log_ratio | 1.42 | 1.17 | 0.520 |
+| Thunderbird | stall | isoforest | 6.70 | 3.27 | 0.545 |
+| Thunderbird | burst | PCA | 1.01 | 1.28 | 0.569 |
+| Thunderbird | burst | z_score | 0.35 | 0.80 | 0.294 |
+| Thunderbird | burst | log_ratio | **2.75** | 1.71 | **0.637** |
+| Thunderbird | burst | isoforest | 11.96 | 5.22 | 0.574 |
+
+**Verdict: PARTIALLY CONFIRMED — the core claim survives, but not unscathed.** Three specific
+disagreements between lift and AUC, none smoothed over:
+
+1. **BGL-stall `z_score`'s apparent strength was partly a calibration artifact.** Lift=1.33 with
+   91/100 detected reads as decisive; AUC-ROC=0.537 shows the underlying continuous score barely
+   ranks anomalous cells above normal ones — barely better than a coin flip. The permissive `|z|>3`
+   threshold buys high recall cheaply. The stall-vs-burst *direction* still holds (z_score's AUC-ROC
+   is higher on both stall cells than both burst cells), but "strong on stalls" should be downgraded
+   to "a real but modest positive signal."
+2. **`isolation_forest_counts`' high-lift cells are confirmed unreliable, not just suspected.**
+   Every cell where it posted a large lift (BGL-stall 1.53, Thunderbird-stall 6.70, Thunderbird-burst
+   11.96) has an AUC-ROC of 0.47–0.57 — near or barely above random. This is independent
+   confirmation of the "dead baseline, zero credibility" conclusion already in §8, not a new problem.
+3. **`log_ratio` on stall is weak under AUC-ROC on *both* datasets** (0.465 BGL, 0.520 Thunderbird)
+   regardless of what lift said in either direction (0.95 BGL "near chance", 1.42 Thunderbird "above
+   chance"). This *resolves* rather than deepens the §5 ambiguity: log_ratio has no reliable ranking
+   signal on stalls, full stop, on either dataset.
+4. **Thunderbird-stall PCA (AUC-ROC=0.613) is one of the strongest rankings in the entire table** —
+   this outright contradicts "content detectors are structurally blind to timing faults" as a
+   general claim. That framing is **BGL-specific**, not universal; Thunderbird's PCA has genuine,
+   threshold-independent ranking power on timing-injected data that BGL's does not (BGL PCA AUC-ROC:
+   0.407 stall, 0.331 burst — both clearly below random).
+
+**What survives everything — lift, AUC-PR, AUC-ROC, both datasets**: `log_ratio_threshold` detects
+bursts with real, robust, above-chance ranking power (AUC-ROC 0.673 BGL / 0.637 Thunderbird, AUC-PR
+ratio 16.1 / 1.71). This is the one finding in the whole project that every metric agrees on — the
+strongest candidate for the paper's headline claim.
+
+## 7. HDFS: scope boundary (characterization only)
 
 HDFS was investigated for premise-audit characterization **only** — no injector, no detectors, by
 explicit design decision. This is not an oversight; it reflects a structural finding that HDFS
@@ -238,16 +299,20 @@ distinct from both the content detectors and the timing detectors this project b
 in `results/hdfs_setup_notes.md`; this section is the scope boundary, not a plan to extend into
 HDFS injection under the current design.
 
-## 7. Honest open items
+## 8. Honest open items
 
 - **BGL-stall log_ratio and both Thunderbird-PCA cells are not decisive** — see the stability table
   in §5. Do not cite these three cells as either a positive or negative finding without the caveat.
-- **log-ratio vs z-score calibration is not apples-to-apples.** `z_score_threshold` uses a fixed
-  `|z|>3` rule that flags ~49% of everything on both datasets (heavy-tailed inter-arrival
-  distributions). `log_ratio_threshold` is calibrated from the train-normal 95th percentile, giving
-  a disciplined ~6–13% base rate. This is part of why log-ratio's *lift* looks favorable even where
-  its absolute detection rate is lower — it's stricter, not necessarily more sensitive. A fair
-  head-to-head would calibrate both the same way; not yet done.
+- **log-ratio vs z-score calibration is not apples-to-apples — now partially addressed by §6.**
+  `z_score_threshold` uses a fixed `|z|>3` rule that flags ~49% of everything on both datasets
+  (heavy-tailed inter-arrival distributions). `log_ratio_threshold` is calibrated from the
+  train-normal 95th percentile, giving a disciplined ~6–13% base rate. This was flagged as a reason
+  lift comparisons might not be apples-to-apples — §6's AUC-PR/AUC-ROC pass (threshold-free by
+  construction) confirms the concern was real: BGL-stall z_score's lift advantage over log_ratio
+  (1.33 vs 0.95) shrinks to near-parity under AUC-ROC (0.537 vs 0.465), and z_score's own AUC-ROC is
+  barely above random despite the favorable lift. AUC-PR/ROC doesn't fully replace a matched-base-rate
+  head-to-head (still not done — see Future Work), but it independently corroborates that some of
+  z_score's lift-based advantage was a calibration effect, not a ranking-quality effect.
 - **The isolation-forest-wrapped timing detector was tried and abandoned.** Feature-scaling was
   diagnosed and fixed, but it still substantially underperforms the trivial `z_score_threshold` on
   stalls. Not pursued further — `z_score_threshold` and `log_ratio_threshold` are the timing
@@ -326,11 +391,14 @@ python src/validate_injection_thunderbird.py --type stall
 python src/validate_injection_thunderbird.py --type burst
 python src/core_result_thunderbird.py
 
-# Consolidation (both datasets)
+# Threshold-independent metrics (both datasets, both fault types -- see §6)
+python src/auc_metrics.py
+
+# Consolidation (both datasets; consolidate_final_results.py merges in auc_metrics.csv)
 python src/consolidate_final_results.py
 python src/compare_bgl_thunderbird.py
 
-# HDFS (characterization only — no injector/detectors, per §6)
+# HDFS (characterization only — no injector/detectors, per §7)
 python src/parser_hdfs.py
 python src/premise_audit_hdfs.py
 ```
@@ -353,9 +421,11 @@ fresh mid-session and confirming bit-identical lift values.
 - Additional fault types: slowdown (gradual stretch, distinct from stall's step-function gap) and
   jitter (added noise without a mean shift).
 - A fair, matched-calibration head-to-head between `z_score_threshold` and `log_ratio_threshold`
-  (same base-rate target) to isolate the geometry effect from the calibration effect noted in §7.
+  (same base-rate target) to isolate the geometry effect from the calibration effect noted in §8 —
+  §6's AUC-PR/AUC-ROC pass is a threshold-free proxy for this, not a substitute.
 - Re-audit `isolation_forest_counts` on Thunderbird the way `results/iforest_diagnosis.md` did for
-  BGL, given its notably higher (and unexplained) lift numbers there.
+  BGL — §6 already shows near-random AUC-ROC on its high-lift cells, but a full mechanistic
+  diagnosis (the kind done for BGL) hasn't been done.
 - Realism calibration against LO2 / AnoMod or similar reference injectors.
 - HDFS: either a sequence-completeness detector family, or a narrower within-block timing-injection
-  design restricted to the 14.24% valid-baseline subset — both open, per §6.
+  design restricted to the 14.24% valid-baseline subset — both open, per §7.

@@ -51,6 +51,16 @@ def rows_to_grid(df_with_eval_grid: pd.DataFrame, row_flags: pd.Series) -> pd.Se
     return pd.Series(flags, index=df_with_eval_grid["eval_window_key"].to_numpy()).groupby(level=0).any()
 
 
+def rows_to_grid_max(df_with_eval_grid: pd.DataFrame, row_scores: pd.Series) -> pd.Series:
+    """Aggregate a row-level CONTINUOUS score up to the eval grid by MAX -- the threshold-free
+    analog of rows_to_grid's "any row flagged" rule, used for AUC-PR/AUC-ROC scoring where there is
+    no boolean flag yet. row_scores must be aligned (same index) with df_with_eval_grid. Applied
+    identically to every detector (src/auc_metrics.py), so cross-detector AUC comparisons use the
+    same aggregation rule throughout."""
+    scores = pd.Series(row_scores).to_numpy()
+    return pd.Series(scores, index=df_with_eval_grid["eval_window_key"].to_numpy()).groupby(level=0).max()
+
+
 def evaluate_common_unit(df_with_eval_grid: pd.DataFrame, row_predicted: pd.Series, row_true: pd.Series) -> dict:
     """Map row-level predicted/true flags onto the shared eval grid and score there."""
     pred_grid = rows_to_grid(df_with_eval_grid, row_predicted).rename("y_pred")

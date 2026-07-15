@@ -5,6 +5,7 @@ import pandas as pd
 STALL_CSV = Path("results/core_result_stall_final.csv")
 BURST_CSV = Path("results/core_result_burst_v2.csv")
 COMPARISON_CSV = Path("results/timing_feature_comparison.csv")
+AUC_CSV = Path("results/auc_metrics.csv")  # threshold-independent metrics, src/auc_metrics.py
 OUT_CSV = Path("results/FINAL_results.csv")
 
 DETECTOR_ORDER = ["count_vector_pca", "z_score_threshold", "log_ratio_threshold", "isolation_forest_counts"]
@@ -39,12 +40,21 @@ def main():
                 raise ValueError(f"Inconsistent duplicate rows for {ft}/{det} across source files:\n{group}")
         combined = combined.drop_duplicates(subset=["fault_type", "detector"], keep="first")
 
+    # Threshold-independent metrics (src/auc_metrics.py) -- BGL rows only, matched on
+    # (fault_type, detector). Doesn't touch lift/detection_rate/etc above; purely additive columns.
+    auc = pd.read_csv(AUC_CSV)
+    auc_bgl = auc[auc["dataset"] == "BGL"][["fault_type", "detector", "auc_pr", "no_skill_baseline", "auc_pr_ratio", "auc_roc"]]
+    combined = combined.merge(auc_bgl, on=["fault_type", "detector"], how="left", validate="one_to_one")
+    if combined["auc_pr"].isna().any():
+        missing = combined.loc[combined["auc_pr"].isna(), ["fault_type", "detector"]]
+        raise ValueError(f"No AUC metrics found for:\n{missing}")
+
     combined["detector_label"] = combined["detector"].map(DETECTOR_LABELS)
     combined["detector_order"] = combined["detector"].map({d: i for i, d in enumerate(DETECTOR_ORDER)})
     combined["fault_order"] = combined["fault_type"].map({"stall": 0, "burst": 1})
     combined = combined.sort_values(["fault_order", "detector_order"]).drop(columns=["detector_order", "fault_order"])
 
-    combined = combined[["fault_type", "detector", "detector_label"] + COLS]
+    combined = combined[["fault_type", "detector", "detector_label"] + COLS + ["auc_pr", "no_skill_baseline", "auc_pr_ratio", "auc_roc"]]
     combined = combined.rename(columns={"grid_flagged_frac": "base_rate"})
 
     OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
