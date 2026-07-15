@@ -70,6 +70,32 @@ START_FRACTION_RANGE = (0.2, 0.8)  # place the stall well inside the node's own 
 MAX_ORIGINAL_GAP_Z = 3.0  # reject injection points whose PRE-EXISTING gap already looks unusual
 MAX_START_POS_TRIES = 200  # bounded retries before falling back to any position in range
 
+# --- rate/density eligibility gate ---
+# MIN_NODE_EVENTS alone only requires enough events to exist SOMEWHERE across the whole
+# observation window -- it says nothing about how densely-packed in TIME those events are. A node
+# can clear MIN_NODE_EVENTS with its handful of events spread across weeks or months. Since
+# stall's delta_seconds = intensity * mad_eff (mad_eff = the node's own baseline scale), a sparse
+# node with a huge mad_eff, hit with the max drawn intensity, produces a fault spanning weeks of
+# wall-clock time -- not a physically plausible "timing anomaly" (a transient stall/burst on an
+# otherwise-continuously-operating node), and diagnosed (results/stall_labeling_diagnostic.md) as
+# concentrating detectable ground truth onto a handful of grid cells per injection.
+#
+# MAX_PLAUSIBLE_FAULT_DURATION_S is a domain judgment, chosen independently of any result: a
+# transient timing fault (as opposed to an extended outage or decommissioning) on an actively
+# monitored HPC/datacenter node is assumed to resolve on the order of an hour -- consistent with
+# typical incident-response/watchdog timescales, and 60x the eval grid's own 60s granularity (so
+# an injected span still reads as a bounded "anomalous event", not an extended offline period).
+# Gating eligibility on mad_eff <= MAX_MAD_EFF_S guarantees, by construction, that even the
+# maximum drawn intensity (max(INTENSITY_CHOICES)) cannot produce a stall exceeding this duration:
+# delta_seconds = intensity * mad_eff <= max(INTENSITY_CHOICES) * MAX_MAD_EFF_S = MAX_PLAUSIBLE_FAULT_DURATION_S.
+# Applied identically to burst eligibility (same node-level gate): burst compresses OBSERVED local
+# gaps rather than mad_eff directly, so this isn't as exact a guarantee there, but mad_eff is a
+# robust per-node summary of local gap magnitude, so excluding high-mad_eff nodes substantially
+# reduces (empirically verified post-fix, not just assumed) the chance of a pathological
+# compressed span too.
+MAX_PLAUSIBLE_FAULT_DURATION_S = 3600.0  # 1 hour
+MAX_MAD_EFF_S = MAX_PLAUSIBLE_FAULT_DURATION_S / max(INTENSITY_CHOICES)  # 120s
+
 BURST_SEED = 43  # distinct from stall's SEED, for an independently reproducible burst experiment
 BURST_N_INJECTIONS = 100
 BURST_INTENSITY_CHOICES = [10, 15, 20, 25, 30]  # compression factor: new_gap = orig_gap / intensity
@@ -90,18 +116,38 @@ def load_clean():
     return df
 
 
-def eligible_nodes(df, min_events=MIN_NODE_EVENTS, node_baselines=None, require_valid_baseline=False):
+def eligible_nodes(df, min_events=MIN_NODE_EVENTS, node_baselines=None, require_valid_baseline=False, max_mad_eff=None):
     """require_valid_baseline=True additionally restricts to nodes with a non-degenerate per-node
     timing baseline (node_baselines["valid_nodes"]) -- needed on datasets where the pooled fallback
     itself is degenerate (see src.timing_baseline.compute_node_baselines's exclude_zero_from_pooled),
     so a low-data node never gets an injection intensity scaled against a broken (zero) baseline.
-    Off by default -- BGL's pooled fallback is healthy, so this was never needed there."""
+    Off by default -- BGL's pooled fallback is healthy, so this was never needed there.
+
+    max_mad_eff, if set, additionally restricts eligibility to nodes whose baseline scale
+    (mad_eff = max(node_mad * 1.4826, MAD_FLOOR_SEC) -- the exact quantity used to compute
+    delta_seconds = intensity * mad_eff for stall injection) is at or below this cap: the
+    rate/density gate (see the module-level MAX_MAD_EFF_S comment for the full rationale).
+    Requires node_baselines (uses node_baselines["node_mad"]); a node with no MAD on record is
+    treated as ineligible (can't verify its duration bound) rather than silently allowed through.
+    """
     counts = df.groupby("node").size()
     nodes = counts[counts >= min_events].index.tolist()
     if require_valid_baseline:
         if node_baselines is None:
             raise ValueError("require_valid_baseline=True requires node_baselines")
         nodes = [n for n in nodes if n in node_baselines["valid_nodes"]]
+    if max_mad_eff is not None:
+        if node_baselines is None:
+            raise ValueError("max_mad_eff requires node_baselines")
+        node_mad = node_baselines["node_mad"]
+
+        def mad_eff_of(n):
+            m = node_mad.get(n)
+            if m is None or pd.isna(m):
+                return float("inf")
+            return max(m * 1.4826, MAD_FLOOR_SEC)
+
+        nodes = [n for n in nodes if mad_eff_of(n) <= max_mad_eff]
     return nodes
 
 
@@ -112,6 +158,7 @@ def plan_injections(
     n_injections=N_INJECTIONS,
     min_node_events=MIN_NODE_EVENTS,
     require_valid_baseline=False,
+    max_mad_eff=None,
 ):
     """Deterministic from `seed` alone. Node selection uses one draw from the master RNG (sampling
     without replacement needs shared state); each injection's start position and intensity are then
@@ -127,7 +174,11 @@ def plan_injections(
     master_rng = np.random.default_rng(seed)
 
     # sorted for determinism (set/groupby order isn't guaranteed)
-    nodes = sorted(eligible_nodes(df, min_events=min_node_events, node_baselines=node_baselines, require_valid_baseline=require_valid_baseline))
+    nodes = sorted(
+        eligible_nodes(
+            df, min_events=min_node_events, node_baselines=node_baselines, require_valid_baseline=require_valid_baseline, max_mad_eff=max_mad_eff
+        )
+    )
     chosen_nodes = master_rng.choice(nodes, size=n_injections, replace=False)
     injection_seeds = master_rng.integers(0, 2**31 - 1, size=n_injections)
 
@@ -250,6 +301,7 @@ def plan_burst_injections(
     n_injections=BURST_N_INJECTIONS,
     min_node_events=BURST_MIN_NODE_EVENTS,
     require_valid_baseline=False,
+    max_mad_eff=None,
 ):
     """Mirrors plan_injections, plus a burst_length draw. A candidate start position is rejected
     if ANY of its burst_length candidate gaps is already an outlier relative to the node's
@@ -257,7 +309,11 @@ def plan_burst_injections(
     rather than one that already contained something unusual."""
     master_rng = np.random.default_rng(seed)
 
-    nodes = sorted(eligible_nodes(df, min_events=min_node_events, node_baselines=node_baselines, require_valid_baseline=require_valid_baseline))
+    nodes = sorted(
+        eligible_nodes(
+            df, min_events=min_node_events, node_baselines=node_baselines, require_valid_baseline=require_valid_baseline, max_mad_eff=max_mad_eff
+        )
+    )
     chosen_nodes = master_rng.choice(nodes, size=n_injections, replace=False)
     injection_seeds = master_rng.integers(0, 2**31 - 1, size=n_injections)
 
@@ -373,7 +429,10 @@ def main_stall():
     normal_seq = (~df_clean["anomaly"]) & (~df_clean["prev_anomaly"].fillna(True)) & df_clean["gap_prev_s"].notna()
     node_baselines = compute_node_baselines(df_clean, normal_seq)
 
-    plans = plan_injections(df_clean, node_baselines)
+    n_eligible = len(eligible_nodes(df_clean, min_events=MIN_NODE_EVENTS, node_baselines=node_baselines, max_mad_eff=MAX_MAD_EFF_S))
+    print(f"Eligible nodes after rate/density gate (size>={MIN_NODE_EVENTS} AND mad_eff<={MAX_MAD_EFF_S}s): {n_eligible:,}")
+
+    plans = plan_injections(df_clean, node_baselines, max_mad_eff=MAX_MAD_EFF_S)
     df_injected, labels_df = apply_injections(df_clean, plans, node_baselines)
 
     grid_labels_df = label_spans_on_grid(labels_df, df_injected)
@@ -394,6 +453,9 @@ def main_stall():
         "n_injections": N_INJECTIONS,
         "intensity_choices": INTENSITY_CHOICES,
         "min_node_events": MIN_NODE_EVENTS,
+        "max_plausible_fault_duration_s": MAX_PLAUSIBLE_FAULT_DURATION_S,
+        "max_mad_eff_s": MAX_MAD_EFF_S,
+        "n_eligible_nodes": n_eligible,
         "start_fraction_range": list(START_FRACTION_RANGE),
         "eval_grid_scheme": EVAL_WINDOW_SCHEME,
         "eval_grid_size_s": EVAL_WINDOW_SIZE,
@@ -421,7 +483,10 @@ def main_burst():
     normal_seq = (~df_clean["anomaly"]) & (~df_clean["prev_anomaly"].fillna(True)) & df_clean["gap_prev_s"].notna()
     node_baselines = compute_node_baselines(df_clean, normal_seq)
 
-    plans = plan_burst_injections(df_clean, node_baselines)
+    n_eligible = len(eligible_nodes(df_clean, min_events=BURST_MIN_NODE_EVENTS, node_baselines=node_baselines, max_mad_eff=MAX_MAD_EFF_S))
+    print(f"Eligible nodes after rate/density gate (size>={BURST_MIN_NODE_EVENTS} AND mad_eff<={MAX_MAD_EFF_S}s): {n_eligible:,}")
+
+    plans = plan_burst_injections(df_clean, node_baselines, max_mad_eff=MAX_MAD_EFF_S)
     df_injected, labels_df = apply_burst_injections(df_clean, plans)
 
     grid_labels_df = label_spans_on_grid(labels_df, df_injected)
@@ -440,6 +505,9 @@ def main_burst():
         "intensity_choices": BURST_INTENSITY_CHOICES,
         "burst_length_choices": BURST_LENGTH_CHOICES,
         "min_node_events": BURST_MIN_NODE_EVENTS,
+        "max_plausible_fault_duration_s": MAX_PLAUSIBLE_FAULT_DURATION_S,
+        "max_mad_eff_s": MAX_MAD_EFF_S,
+        "n_eligible_nodes": n_eligible,
         "start_fraction_range": list(BURST_START_FRACTION_RANGE),
         "eval_grid_scheme": EVAL_WINDOW_SCHEME,
         "eval_grid_size_s": EVAL_WINDOW_SIZE,

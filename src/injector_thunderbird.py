@@ -40,13 +40,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root, so `s
 import numpy as np
 import pandas as pd
 
-from src.injector import apply_burst_injections, apply_injections, label_spans_on_grid, plan_burst_injections, plan_injections
+from src.injector import apply_burst_injections, apply_injections, eligible_nodes, label_spans_on_grid, plan_burst_injections, plan_injections
 from src.injector import (
     BURST_INTENSITY_CHOICES,
     BURST_LENGTH_CHOICES,
     BURST_MIN_NODE_EVENTS,
     BURST_SEED,
     INTENSITY_CHOICES,
+    MAX_MAD_EFF_S,
+    MAX_PLAUSIBLE_FAULT_DURATION_S,
     MIN_NODE_EVENTS,
     N_INJECTIONS,
     SEED,
@@ -85,11 +87,11 @@ def main_stall():
     node_baselines = build_baselines(df_clean)
 
     n_eligible = len(
-        [n for n in df_clean.groupby("node").size()[lambda s: s >= MIN_NODE_EVENTS].index if n in node_baselines["valid_nodes"]]
+        eligible_nodes(df_clean, min_events=MIN_NODE_EVENTS, node_baselines=node_baselines, require_valid_baseline=True, max_mad_eff=MAX_MAD_EFF_S)
     )
-    print(f"Eligible nodes after fix (size>={MIN_NODE_EVENTS} AND valid per-node baseline): {n_eligible:,}")
+    print(f"Eligible nodes after fix + rate/density gate (size>={MIN_NODE_EVENTS} AND valid per-node baseline AND mad_eff<={MAX_MAD_EFF_S}s): {n_eligible:,}")
 
-    plans = plan_injections(df_clean, node_baselines, require_valid_baseline=True)
+    plans = plan_injections(df_clean, node_baselines, require_valid_baseline=True, max_mad_eff=MAX_MAD_EFF_S)
     df_injected, labels_df = apply_injections(df_clean, plans, node_baselines)
 
     grid_labels_df = label_spans_on_grid(labels_df, df_injected)
@@ -109,6 +111,8 @@ def main_stall():
         "min_node_events": MIN_NODE_EVENTS,
         "require_valid_baseline": True,
         "exclude_zero_from_pooled": True,
+        "max_plausible_fault_duration_s": MAX_PLAUSIBLE_FAULT_DURATION_S,
+        "max_mad_eff_s": MAX_MAD_EFF_S,
         "n_eligible_nodes": n_eligible,
         "eval_grid_scheme": EVAL_WINDOW_SCHEME,
         "eval_grid_size_s": EVAL_WINDOW_SIZE,
@@ -134,11 +138,15 @@ def main_burst():
     node_baselines = build_baselines(df_clean)
 
     n_eligible = len(
-        [n for n in df_clean.groupby("node").size()[lambda s: s >= BURST_MIN_NODE_EVENTS].index if n in node_baselines["valid_nodes"]]
+        eligible_nodes(
+            df_clean, min_events=BURST_MIN_NODE_EVENTS, node_baselines=node_baselines, require_valid_baseline=True, max_mad_eff=MAX_MAD_EFF_S
+        )
     )
-    print(f"Eligible nodes after fix (size>={BURST_MIN_NODE_EVENTS} AND valid per-node baseline): {n_eligible:,}")
+    print(
+        f"Eligible nodes after fix + rate/density gate (size>={BURST_MIN_NODE_EVENTS} AND valid per-node baseline AND mad_eff<={MAX_MAD_EFF_S}s): {n_eligible:,}"
+    )
 
-    plans = plan_burst_injections(df_clean, node_baselines, require_valid_baseline=True)
+    plans = plan_burst_injections(df_clean, node_baselines, require_valid_baseline=True, max_mad_eff=MAX_MAD_EFF_S)
     df_injected, labels_df = apply_burst_injections(df_clean, plans)
 
     grid_labels_df = label_spans_on_grid(labels_df, df_injected)
@@ -159,6 +167,8 @@ def main_burst():
         "min_node_events": BURST_MIN_NODE_EVENTS,
         "require_valid_baseline": True,
         "exclude_zero_from_pooled": True,
+        "max_plausible_fault_duration_s": MAX_PLAUSIBLE_FAULT_DURATION_S,
+        "max_mad_eff_s": MAX_MAD_EFF_S,
         "n_eligible_nodes": n_eligible,
         "eval_grid_scheme": EVAL_WINDOW_SCHEME,
         "eval_grid_size_s": EVAL_WINDOW_SIZE,
