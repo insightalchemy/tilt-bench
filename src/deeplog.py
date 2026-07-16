@@ -1,18 +1,24 @@
 """
 DeepLog baseline (Du et al., "DeepLog: Anomaly Detection and Diagnosis from System Logs through
 Deep Learning", CCS 2017): stacked LSTM over one-hot per-node template-ID sequences, trained on
-clean train-period native-normal rows only, scored against the project's existing n=100
-injected-span ground truth via the existing eval-grid harness (src.metrics, src.auc_metrics,
-src.core_result_stall_final). Never trains on injected data or on native-anomalous rows.
+clean train-period native-normal rows only. Two evaluation targets, selected by --eval-target:
+"injected" scores the trained model against the project's n=100 injected-span ground truth;
+"native" scores it against BGL/Thunderbird's own native alert labels on the chronological
+test-period rows only. Both reuse the existing eval-grid harness (src.metrics, src.auc_metrics,
+src.core_result_stall_final) rather than reimplementing scoring. Never trains on injected data or
+on native-anomalous rows.
 
 Run (GPU server):
-    python src/deeplog.py --dataset bgl --fault stall --device cuda
-    python src/deeplog.py --dataset bgl --fault burst --device cuda
-    python src/deeplog.py --dataset thunderbird --fault stall --device cuda
-    python src/deeplog.py --dataset thunderbird --fault burst --device cuda
+    python src/deeplog.py --dataset bgl --fault stall --eval-target injected --device cuda
+    python src/deeplog.py --dataset bgl --fault burst --eval-target injected --device cuda
+    python src/deeplog.py --dataset thunderbird --fault stall --eval-target injected --device cuda
+    python src/deeplog.py --dataset thunderbird --fault burst --eval-target injected --device cuda
+    python src/deeplog.py --dataset bgl --eval-target native --device cuda
+    python src/deeplog.py --dataset thunderbird --eval-target native --device cuda
 
 Local smoke test (never full training locally):
-    python src/deeplog.py --dataset bgl --fault stall --subsample 50000 --epochs 1 --device cpu --check-invariance
+    python src/deeplog.py --dataset bgl --fault stall --eval-target injected --subsample 50000 --subsample-include-injected 5 --epochs 1 --device cpu --check-invariance
+    python src/deeplog.py --dataset bgl --eval-target native --subsample 200000 --epochs 1 --device cpu
 """
 
 import argparse
@@ -35,7 +41,7 @@ from src.core_result_burst import load_injected_burst as load_bgl_burst
 from src.core_result_stall import load_injected as load_bgl_stall
 from src.core_result_stall_final import score_detector
 from src.core_result_thunderbird import chronological_split as chronological_split_tb, load_clean as load_tb_clean, load_injected as load_tb_injected
-from src.metrics import assign_eval_grid
+from src.metrics import assign_eval_grid, evaluate_common_unit
 from src.run_baseline_detectors import chronological_split as chronological_split_bgl
 
 OOV_TOKEN = "<OOV>"
@@ -75,16 +81,31 @@ def resolve_device(requested):
     return torch.device(requested)
 
 
-def load_by_node(df, subsample=None):
+def load_by_node(df, subsample=None, must_include_nodes=None):
     df = df.sort_values(["node", "timestamp"], kind="mergesort").reset_index(drop=True)
     if subsample is not None:
-        df = df.head(subsample).reset_index(drop=True)
+        if must_include_nodes:
+            included = df[df["node"].isin(must_include_nodes)]
+            remainder_budget = max(subsample - len(included), 0)
+            remainder = df[~df["node"].isin(must_include_nodes)].head(remainder_budget)
+            df = pd.concat([included, remainder]).sort_values(["node", "timestamp"], kind="mergesort")
+        else:
+            df = df.head(subsample)
+        df = df.reset_index(drop=True)
     df["row_id"] = np.arange(len(df))
     return df
 
 
-def load_clean_by_node(path, subsample=None):
-    return load_by_node(pd.read_parquet(path), subsample=subsample)
+def load_clean_by_node(path, subsample=None, must_include_nodes=None):
+    return load_by_node(pd.read_parquet(path), subsample=subsample, must_include_nodes=must_include_nodes)
+
+
+def select_injected_nodes(loader_fn, n, seed):
+    df = loader_fn()
+    injected_nodes = df.loc[df["injected_row"], "node"].unique().tolist()
+    rng = np.random.default_rng(seed)
+    size = min(n, len(injected_nodes))
+    return set(rng.choice(injected_nodes, size=size, replace=False).tolist())
 
 
 def build_vocabulary(templates):
@@ -182,7 +203,7 @@ def full_row_arrays(n_rows, target_row_ids, scores, flags):
     return row_score, row_flag
 
 
-def evaluate_against_ground_truth(df_full, row_score, row_flag, grid_labels_path):
+def evaluate_against_injected(df_full, row_score, row_flag, grid_labels_path):
     grid_labels = pd.read_csv(grid_labels_path)
     anomalous_cells = set(zip(grid_labels["node"], grid_labels["window_idx"]))
     injection_ids = sorted(grid_labels["injection_id"].unique())
@@ -198,6 +219,31 @@ def evaluate_against_ground_truth(df_full, row_score, row_flag, grid_labels_path
     auc_metrics = compute_grid_auc(df_eval, row_score_by_id, row_true_aligned)
 
     return {**lift_metrics, **auc_metrics}
+
+
+def evaluate_against_native_labels(df_full, is_train, row_score, row_flag):
+    df_test = df_full.loc[~is_train.to_numpy()].reset_index(drop=True)
+    df_eval = assign_eval_grid(df_test)
+
+    row_flag_by_id = pd.Series(row_flag, index=df_full["row_id"].to_numpy())
+    row_score_by_id = pd.Series(row_score, index=df_full["row_id"].to_numpy())
+    row_predicted = df_eval["row_id"].map(row_flag_by_id).fillna(False)
+    row_true = df_eval["anomaly"]
+
+    common_unit = evaluate_common_unit(df_eval, row_predicted, row_true)
+    grid_flagged_frac = common_unit["n_flagged"] / common_unit["n_eval_cells"] if common_unit["n_eval_cells"] else float("nan")
+    lift = common_unit["recall"] / grid_flagged_frac if grid_flagged_frac else float("nan")
+
+    auc_metrics = compute_grid_auc(df_eval, row_score_by_id, row_true)
+
+    return {
+        "precision": common_unit["precision"],
+        "recall": common_unit["recall"],
+        "f1": common_unit["f1"],
+        "grid_flagged_frac": grid_flagged_frac,
+        "lift": lift,
+        **auc_metrics,
+    }
 
 
 def run_invariance_check(model, df_clean, df_injected, h, top_k, device):
@@ -241,7 +287,8 @@ def run_invariance_check(model, df_clean, df_injected, h, top_k, device):
 def parse_args():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dataset", choices=["bgl", "thunderbird"], required=True)
-    ap.add_argument("--fault", choices=["stall", "burst"], required=True)
+    ap.add_argument("--fault", choices=["stall", "burst"], default=None)
+    ap.add_argument("--eval-target", choices=["injected", "native"], default="injected")
     ap.add_argument("--window-size", type=int, default=10)
     ap.add_argument("--top-k", type=int, default=9)
     ap.add_argument("--hidden-size", type=int, default=64)
@@ -252,11 +299,17 @@ def parse_args():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     ap.add_argument("--subsample", type=int, default=None)
+    ap.add_argument("--subsample-include-injected", type=int, default=None)
     ap.add_argument("--check-invariance", action="store_true")
     ap.add_argument("--out-csv", type=Path, default=None)
     ap.add_argument("--save-model", type=Path, default=None)
     ap.add_argument("--load-model", type=Path, default=None)
-    return ap.parse_args()
+    args = ap.parse_args()
+    if args.eval_target == "injected" and args.fault is None:
+        ap.error("--fault is required when --eval-target injected")
+    if args.subsample_include_injected is not None and args.eval_target != "injected":
+        ap.error("--subsample-include-injected only applies to --eval-target injected")
+    return args
 
 
 def main():
@@ -266,7 +319,11 @@ def main():
     config = DATASET_CONFIG[args.dataset]
     t0 = time.time()
 
-    df_clean = load_clean_by_node(config["clean_path"], subsample=args.subsample)
+    must_include_nodes = None
+    if args.subsample_include_injected is not None:
+        must_include_nodes = select_injected_nodes(config["injected_loaders"][args.fault], args.subsample_include_injected, args.seed)
+
+    df_clean = load_clean_by_node(config["clean_path"], subsample=args.subsample, must_include_nodes=must_include_nodes)
     is_train, cutoff = config["split_fn"](df_clean)
     train_mask = is_train.to_numpy() & (~df_clean["anomaly"].to_numpy())
     df_train = df_clean.loc[train_mask].copy()
@@ -290,48 +347,81 @@ def main():
         args.save_model.parent.mkdir(parents=True, exist_ok=True)
         torch.save(model.state_dict(), args.save_model)
 
-    df_injected = load_by_node(config["injected_loaders"][args.fault](), subsample=args.subsample)
-    df_injected["template_id"] = encode_templates(df_injected["event_template"], vocab)
-    oov_rows = int((df_injected["template_id"] == vocab[OOV_TOKEN]).sum())
+    metrics = {
+        "dataset": args.dataset,
+        "eval_target": args.eval_target,
+        "detector": "deeplog",
+        "window_size": args.window_size,
+        "top_k": args.top_k,
+        "hidden_size": args.hidden_size,
+        "num_layers": args.num_layers,
+        "epochs": args.epochs,
+        "seed": args.seed,
+        "subsample": args.subsample,
+        "subsample_include_injected": args.subsample_include_injected,
+        "vocab_size": len(vocab),
+        "n_train_windows": len(X_train),
+        "train_time_s": train_time_s,
+        "final_train_loss": train_history[-1] if train_history else None,
+    }
 
-    t_infer0 = time.time()
-    X_infer, y_infer, target_row_ids = build_windows(df_injected, "template_id", args.window_size)
-    scores, flags = predict_scores(model, X_infer, y_infer, device, args.top_k)
-    infer_time_s = time.time() - t_infer0
-    row_score, row_flag = full_row_arrays(len(df_injected), target_row_ids, scores, flags)
+    df_injected = None
+    if args.eval_target == "injected":
+        df_injected = load_by_node(config["injected_loaders"][args.fault](), subsample=args.subsample, must_include_nodes=must_include_nodes)
+        df_injected["template_id"] = encode_templates(df_injected["event_template"], vocab)
+        oov_rows = int((df_injected["template_id"] == vocab[OOV_TOKEN]).sum())
 
-    metrics = evaluate_against_ground_truth(df_injected, row_score, row_flag, config["grid_labels_path"][args.fault])
-    metrics.update(
-        {
-            "dataset": args.dataset,
-            "fault_type": args.fault,
-            "detector": "deeplog",
-            "window_size": args.window_size,
-            "top_k": args.top_k,
-            "hidden_size": args.hidden_size,
-            "num_layers": args.num_layers,
-            "epochs": args.epochs,
-            "seed": args.seed,
-            "subsample": args.subsample,
-            "vocab_size": len(vocab),
-            "oov_rows": oov_rows,
-            "oov_frac": oov_rows / len(df_injected),
-            "n_train_windows": len(X_train),
-            "n_infer_windows": len(X_infer),
-            "train_time_s": train_time_s,
-            "infer_time_s": infer_time_s,
-            "total_time_s": time.time() - t0,
-            "final_train_loss": train_history[-1] if train_history else None,
-        }
-    )
+        t_infer0 = time.time()
+        X_infer, y_infer, target_row_ids = build_windows(df_injected, "template_id", args.window_size)
+        scores, flags = predict_scores(model, X_infer, y_infer, device, args.top_k)
+        infer_time_s = time.time() - t_infer0
+        row_score, row_flag = full_row_arrays(len(df_injected), target_row_ids, scores, flags)
 
-    out_csv = args.out_csv or Path(f"results/deeplog_{args.dataset}_{args.fault}.csv")
+        eval_metrics = evaluate_against_injected(df_injected, row_score, row_flag, config["grid_labels_path"][args.fault])
+        metrics.update(eval_metrics)
+        metrics.update(
+            {
+                "fault_type": args.fault,
+                "oov_rows": oov_rows,
+                "oov_frac": oov_rows / len(df_injected),
+                "n_infer_windows": len(X_infer),
+                "infer_time_s": infer_time_s,
+            }
+        )
+    else:
+        oov_rows_test = int((df_clean.loc[~is_train.to_numpy(), "template_id"] == vocab[OOV_TOKEN]).sum())
+        n_test_rows = int((~is_train.to_numpy()).sum())
+
+        t_infer0 = time.time()
+        X_infer, y_infer, target_row_ids = build_windows(df_clean, "template_id", args.window_size)
+        scores, flags = predict_scores(model, X_infer, y_infer, device, args.top_k)
+        infer_time_s = time.time() - t_infer0
+        row_score, row_flag = full_row_arrays(len(df_clean), target_row_ids, scores, flags)
+
+        eval_metrics = evaluate_against_native_labels(df_clean, is_train, row_score, row_flag)
+        metrics.update(eval_metrics)
+        metrics.update(
+            {
+                "fault_type": None,
+                "oov_rows": oov_rows_test,
+                "oov_frac": oov_rows_test / n_test_rows if n_test_rows else float("nan"),
+                "n_infer_windows": len(X_infer),
+                "infer_time_s": infer_time_s,
+            }
+        )
+
+    metrics["total_time_s"] = time.time() - t0
+
+    default_name = f"deeplog_{args.dataset}_{args.fault}.csv" if args.eval_target == "injected" else f"deeplog_{args.dataset}_native.csv"
+    out_csv = args.out_csv or Path("results") / default_name
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame([metrics]).to_csv(out_csv, index=False)
     print(pd.Series(metrics).to_string())
     print(f"Wrote {out_csv}")
 
     if args.check_invariance:
+        if args.eval_target != "injected":
+            raise ValueError("--check-invariance requires --eval-target injected")
         run_invariance_check(model, df_clean, df_injected, args.window_size, args.top_k, device)
 
 
