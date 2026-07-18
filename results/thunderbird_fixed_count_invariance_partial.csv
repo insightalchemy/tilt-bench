@@ -1,0 +1,13 @@
+dataset,fault_type,scheme,scheme_kind,scheme_size,detector,n_common_windows,max_abs_score_diff,n_differing_windows,n_grid_cell_reassignments,n_common_rows_for_grid_check
+thunderbird,stall,fixed_count_20,fixed_count,20,count_vector_pca,502230,0.0,0,0,10000000
+thunderbird,stall,fixed_count_20,fixed_count,20,isolation_forest_counts,502230,0.0,0,0,10000000
+thunderbird,burst,fixed_count_20,fixed_count,20,count_vector_pca,502230,0.0,0,0,10000000
+thunderbird,burst,fixed_count_20,fixed_count,20,isolation_forest_counts,502230,0.0,0,0,10000000
+thunderbird,stall,fixed_count_50,fixed_count,50,count_vector_pca,202338,0.0,0,0,10000000
+thunderbird,stall,fixed_count_50,fixed_count,50,isolation_forest_counts,202338,0.0,0,0,10000000
+thunderbird,burst,fixed_count_50,fixed_count,50,count_vector_pca,202338,0.0,0,0,10000000
+thunderbird,burst,fixed_count_50,fixed_count,50,isolation_forest_counts,202338,0.0,0,0,10000000
+thunderbird,stall,fixed_count_100,fixed_count,100,count_vector_pca,102310,0.0,0,0,10000000
+thunderbird,stall,fixed_count_100,fixed_count,100,isolation_forest_counts,102310,0.0,0,0,10000000
+thunderbird,burst,fixed_count_100,fixed_count,100,count_vector_pca,102310,0.0,0,0,10000000
+thunderbird,burst,fixed_count_100,fixed_count,100,isolation_forest_counts,102310,0.0,0,0,10000000
