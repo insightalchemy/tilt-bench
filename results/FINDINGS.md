@@ -433,6 +433,62 @@ HDFS injection under the current design.
   under the new rule. Given how much the numbers moved from one eligibility-rule change alone, this
   is a real gap, not a formality.
 
+## 9. Windowing sweep: timing faults are structurally invisible under fixed-count windowing
+
+`src/windowing_sweep.py` directly tests CLAUDE.md's central windowing claim: does the *windowing
+scheme itself*, independent of detector family, determine whether a timing-only fault is
+observable at all? Same detectors, same injected data, only the window-assignment rule varies
+(fixed-count: N events per node; fixed-time: fixed wall-clock seconds per node). Full results in
+`results/windowing_sweep.csv` (detection metrics) and `results/windowing_sweep_invariance.csv`
+(clean-vs-injected invariance check), with narrative detail in `results/windowing_sweep_notes.md`.
+**This section documents a partially-complete sweep — see "Still pending" below before citing any
+number as final.**
+
+**Invariance result (complete on both datasets):** for `count_vector_pca` and
+`isolation_forest_counts` under fixed-count windowing (N=20/50/100), clean and injected data
+produce **exactly identical** windows and scores — `max_abs_score_diff = 0.0`,
+`n_differing_windows = 0`, `n_grid_cell_reassignments = 0`, across both fault types and all three
+window sizes, on **both BGL and Thunderbird** (24 cells total, no exceptions). This is exact, not
+approximate: fixed-count window membership depends only on an event's position in its node's
+sequence, never on its timestamp, so a timestamp-shifting fault cannot change which window a row
+lands in or what a count-based detector scores it as.
+
+**Contrast (BGL only, complete):** under fixed-time windowing (30s/60s/120s), the same two
+detectors show real, substantial differences on the same injected data — score diffs of 12.9–348,
+hundreds of differing windows, and thousands of grid-cell reassignments (5,245–9,473 per cell, out
+of 4,747,963 rows checked).
+
+**Independent third confirmation (BGL, DeepLog smoke test):** `results/deeplog_smoke_test.md`'s
+invariance check on a subsampled, 1-epoch DeepLog model shows the identical pattern at the
+sequence-model level — `max_abs_score_diff = 0.0` across 49,930 comparable prediction windows, with
+`n_grid_cell_reassignments = 331` (0.66% of 50,000 common rows landed in a different 60s grid cell
+purely from the timestamp shift, while each row's DeepLog prediction stayed byte-for-byte
+unchanged). A sequence-based deep model is exactly as structurally blind to timing-only faults as
+the count-vector detectors, for the same underlying reason: its input (the template-ID sequence)
+never changes under a timestamp shift.
+
+**Conclusion this supports:** content and sequence detectors are provably blind to timing-only
+faults — demonstrated three independent ways (count-vector/PCA, isolation-forest-on-counts,
+DeepLog), on two datasets for the count detectors. Any apparent timing-fault "detection" that shows
+up under fixed-time windowing does not come from a detector gaining sensitivity to timing; it comes
+from the windowing scheme converting a timing perturbation into a **count** perturbation (rows
+shifting between fixed-time buckets), which a count-based detector then picks up as an ordinary
+count anomaly. Windowing choice, not detector architecture, determines whether timing faults are
+observable at all.
+
+**Still pending — do not treat the sweep as complete:**
+- **Thunderbird fixed-time windowing (30s/60s/120s)**, all 4 detectors, both fault types (24 sweep
+  rows + 12 invariance rows, marked `PENDING` in both CSVs, not zero/blank). Attempted locally and
+  **OOM-killed** by the macOS kernel (confirmed via the unified system log: `memorystatus: killing
+  largest compressed process Python [69770] 23625 MB`) — a genuine memory-capacity failure on this
+  8GB development machine, not a repeat of the project's earlier fileproviderd/iCloud stall issue
+  and not a correctness bug in the injector or windowing logic. Scheduled to run on a lab server;
+  no code changes have been made in response.
+- **DeepLog full training run**, both datasets, both eval targets. Only the 1-epoch, subsampled
+  smoke test above has been run locally, per explicit instruction that this machine is not used for
+  real DeepLog training. Its invariance result is trustworthy as a structural finding (it doesn't
+  depend on training quality), but no full-scale DeepLog detection numbers exist yet.
+
 ## Exact configuration
 
 - **Datasets**:
@@ -501,6 +557,19 @@ python src/core_result_thunderbird.py
 
 # Threshold-independent metrics (both datasets, both fault types -- see §6)
 python src/auc_metrics.py
+
+# Windowing sweep (fixed-count vs fixed-time, both datasets -- see §9)
+# `python src/windowing_sweep.py` with no arguments runs both datasets end-to-end and regenerates
+# results/windowing_sweep.csv / results/windowing_sweep_invariance.csv in full -- only viable on a
+# machine with enough RAM for Thunderbird's fixed-time schemes (OOM-killed on the 8GB dev machine,
+# see §9). The current results/windowing_sweep.csv was assembled by hand from three partial runs
+# instead, pending that full re-run:
+python src/windowing_sweep.py bgl            # already complete; do not re-run, do not overwrite
+# Thunderbird fixed-count schemes only (low memory footprint, ~1-3GB peak) -- complete:
+#   scratch driver that calls windowing_sweep.process_count_scheme() directly, skipping the
+#   memory-heavy fixed-time schemes; see results/windowing_sweep_notes.md §4.
+# Thunderbird fixed-time schemes (30/60/120s) -- PENDING, run on a lab server with more RAM:
+python src/windowing_sweep.py thunderbird
 
 # Consolidation (both datasets; consolidate_final_results.py merges in auc_metrics.csv)
 python src/consolidate_final_results.py
