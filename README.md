@@ -174,20 +174,6 @@ run on their own, for example `bash scripts/reproduce_all.sh bgl thunderbird pla
 | `placebo_delta.png` | `make_figures.py` | `python src/make_figures.py --figure placebo_delta` |
 | Injection inter-arrival plots (`{stall,burst}_injection_check.png`) | `validate_injection*.py` | `python src/validate_injection.py --type {stall,burst}` |
 
-## Citation
-
-```
-@misc{nagpal2026tiltbench,
-  title={Probing the Windowing Blind Spot in Log Anomaly Detection with TILT-Bench},
-  author={Nagpal, Ishan and Wu, Chase Q. and Zhang, Yijie},
-  year={2026},
-  note={Preprint, under review}
-}
-```
-
-Please also cite the datasets: Loghub (Zhu et al., ISSRE 2023) and Oliner and Stearley
-(DSN 2007) for BGL, Thunderbird, and Spirit.
-
 ## License
 
 MIT. See `LICENSE`.
