@@ -1,0 +1,11 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+data/
+results/
+figures/
+logs/
+*.parquet
+*.log
