@@ -1,18 +1,6 @@
 # TILT-Bench
 
-TILT-Bench injects calibrated, order-preserving timing faults (stalls, bursts, and slowdowns) into
-public log anomaly detection benchmarks by changing only event timestamps; event content and
-per-node event order are left untouched. Fault intensity is set relative to each node's own
-inter-arrival variability, and every injection is seeded and recorded with ground-truth labels.
-The repository also contains the premise audit of native benchmark anomalies, the invariance
-checks that compare detector scores on clean and injected data under fixed-count and fixed-time
-windowing, the detectors used in the paper, and the placebo-controlled evaluation that separates a
-detector's response to a fault from its preference for the windows where faults are placed.
-
-## Paper
-
-Ishan Nagpal, Chase Q. Wu, and Yijie Zhang. *Probing the Windowing Blind Spot in Log Anomaly
-Detection with TILT-Bench.* [PAPER LINK]
+TILT-Bench injects three types of timing faults, stalls, bursts, and slowdowns, into public log anomaly detection benchmarks by changing only event timestamps. The event content and per-node event order stay the same. Fault intensity is scaled to each node’s own inter-arrival variability, and every injection is seeded and saved with its ground-truth label. The repository also includes our audit of native benchmark anomalies, checks comparing detector scores on clean and injected data under fixed-count and fixed-time windows, the detectors used in the paper, and a placebo-controlled evaluation that tests whether a detector is responding to the fault itself or simply to where the fault falls within the window.
 
 ## Repository structure
 
@@ -47,11 +35,11 @@ None of these directories are part of the repository.
 
   The shell drivers in `scripts/` set this themselves.
 
-Hardware. No GPU is required. The full-scale BGL and Thunderbird windowing and placebo sweeps
+Hardware. No GPU is required, and the full-scale BGL and Thunderbird windowing and placebo sweeps
 need roughly 25 to 31 GB of RAM. Training the DeepLog models takes many hours on CPU for BGL and
-considerably longer for Thunderbird; the time-aware DeepLog variant and the LogBERT-style
+considerably longer for Thunderbird. The time-aware DeepLog variant and the LogBERT-style
 transformer also take several hours each. Most experiment scripts accept `--subsample` and
-`--subsample-include-injected` for a quick end-to-end check on a small slice of the data.
+`--subsample-include-injected` for a quick end-to-end check on a small subset of the data.
 
 ## Getting the data
 
