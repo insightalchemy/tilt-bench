@@ -47,10 +47,10 @@ We do not redistribute any dataset. Place the raw files under `data/raw/` as lis
 
 | Dataset | Expected file(s) | Source |
 |---|---|---|
-| BGL | `data/raw/BGL.log` | Loghub (Zhu et al., ISSRE 2023), Zenodo record 3227177, `BGL.tar.gz` [SOURCE TO CONFIRM] |
-| Thunderbird | `data/raw/Thunderbird.log` | Loghub `Thunderbird.tar.gz`, https://zenodo.org/records/8196385/files/Thunderbird.tar.gz [SOURCE TO CONFIRM] |
+| BGL | `data/raw/BGL.log` | Loghub (Zhu et al., ISSRE 2023), Zenodo record 3227177, `BGL.tar.gz` |
+| Thunderbird | `data/raw/Thunderbird.log` | Loghub `Thunderbird.tar.gz`, https://zenodo.org/records/8196385/files/Thunderbird.tar.gz |
 | Spirit | `data/raw/Spirit.log` | 5M-line subset from the replication package of Wu, Li, and Khomh (EMSE 2023), https://zenodo.org/records/7851024/files/spirit2_5m.tar.gz?download=1 (downloaded and md5-checked by `python src/spirit_setup.py download`) |
-| HDFS | `data/raw/HDFS.log`, `data/raw/anomaly_label.csv` | Loghub `HDFS_v1.zip`, https://zenodo.org/records/8196385/files/HDFS_v1.zip [SOURCE TO CONFIRM] |
+| HDFS | `data/raw/HDFS.log`, `data/raw/anomaly_label.csv` | Loghub `HDFS_v1.zip`, https://zenodo.org/records/8196385/files/HDFS_v1.zip |
 | OpenStack, Hadoop, Zookeeper, Android, Spark, Windows | `data/raw/<name>_raw/` | Loghub, Zenodo record 3227177, `https://zenodo.org/records/3227177/files/<Name>.tar.gz?download=1` (downloaded and extracted by `python src/multi_dataset_acquire.py download --dataset <name>`) |
 
 Thunderbird slice. The experiments use a 10,000,000-line contiguous slice of the full
